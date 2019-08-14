@@ -14,7 +14,7 @@
 
 /* Begin PBXFileReference section */
 		80DA2E9420B4886E00FF660F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
-		80DE773520B1A7ED00C6973D /* BroLoad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = BroLoad.app; path = Overbrowsered.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		80DE773520B1A7ED00C6973D /* Overbrowsered.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Overbrowsered.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		80DE773820B1A7ED00C6973D /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		80DE773C20B1A7EE00C6973D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		80DE774120B1A7EE00C6973D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -43,7 +43,7 @@
 		80DE773620B1A7ED00C6973D /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				80DE773520B1A7ED00C6973D /* BroLoad.app */,
+				80DE773520B1A7ED00C6973D /* Overbrowsered.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -77,7 +77,7 @@
 			);
 			name = Overbrowsered;
 			productName = BroLoad;
-			productReference = 80DE773520B1A7ED00C6973D /* BroLoad.app */;
+			productReference = 80DE773520B1A7ED00C6973D /* Overbrowsered.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -92,7 +92,7 @@
 				TargetAttributes = {
 					80DE773420B1A7EC00C6973D = {
 						CreatedOnToolsVersion = 9.3.1;
-						LastSwiftMigration = 0930;
+						LastSwiftMigration = 1030;
 						SystemCapabilities = {
 							com.apple.Sandbox = {
 								enabled = 1;
@@ -278,7 +278,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_PRECOMPILE_BRIDGING_HEADER = NO;
-				SWIFT_VERSION = 4.0;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
 		};
@@ -303,7 +303,7 @@
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_OBJC_BRIDGING_HEADER = "";
 				SWIFT_PRECOMPILE_BRIDGING_HEADER = NO;
-				SWIFT_VERSION = 4.0;
+				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};

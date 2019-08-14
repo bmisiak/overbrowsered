@@ -66,7 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	func applicationDidFinishLaunching(_ aNotification: Notification) {
 		
 		self.menubarIcon = NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength)
-		self.menubarIcon?.button?.image = NSImage(named: NSImage.Name("StatusBarButtonImage"))
+		self.menubarIcon?.button?.image = NSImage(named: "StatusBarButtonImage")
 		
 		let menu = NSMenu()
 		menu.delegate = self

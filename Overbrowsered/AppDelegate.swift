@@ -133,8 +133,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		
         let appIsABrowser =
             (appBundle.infoDictionary?["CFBundleURLTypes"] as? [[String:Any?]])?
-            .map { $0["CFBundleURLSchemes"] as? [String?] }
-            .contains { schemes in schemes?.contains { $0 == "http" || $0 == "https" } ?? false }
+            .map { urlType in urlType["CFBundleURLSchemes"] as? [String?] }
+            .contains { schemes in
+                schemes?.contains { scheme in scheme == "http" || scheme == "https" } ?? false
+            }
             ?? false
 		
 		if appIsABrowser {

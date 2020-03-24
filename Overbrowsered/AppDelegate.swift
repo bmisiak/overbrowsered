@@ -73,9 +73,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	
 	public func menuNeedsUpdate(_ menu: NSMenu) {
 		menu.removeAllItems()
-        
-        menu.addItem(withTitle: "Overbrowsered by @bmisiak", action: nil, keyEquivalent: "")
-        menu.addItem(NSMenuItem.separator())
+		
+		menu.addItem(withTitle: "Overbrowsered by @bmisiak", action: nil, keyEquivalent: "")
+		menu.addItem(NSMenuItem.separator())
 		
 		menu.addItem(withTitle: "Most recently used browser: \(self.mostRecentlyUsedBrowser?.infoDictionary?["CFBundleName"] as? String ?? "Unknown (use any browser to detect)")", action: nil, keyEquivalent: "")
 		
@@ -87,13 +87,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		
 		if defaultBrowserBundle == Bundle.main {
 			menu.addItem(withTitle: "Default http handler: me 👌", action: nil, keyEquivalent: "")
-        } else if defaultBrowserBundle?.bundleIdentifier == Bundle.main.bundleIdentifier {
-            menu.addItem(withTitle: "Default http handler: Overbrowsered", action: nil, keyEquivalent: "")
+		} else if defaultBrowserBundle?.bundleIdentifier == Bundle.main.bundleIdentifier {
+			menu.addItem(withTitle: "Default http handler: Overbrowsered", action: nil, keyEquivalent: "")
 		} else {
-            let handlerName = defaultBrowserBundle?.infoDictionary?["CFBundleName"] as? String ?? defaultBrowserBundle?.bundleIdentifier
-            
-            menu.addItem(withTitle: "Default http handler: \(handlerName ?? "not me") ☹️", action: nil, keyEquivalent: "")
-            menu.addItem(withTitle: "⚠️ For Overbrowsered to work, click here to set it as the default \"browser\".", action: #selector(self.menuBarSetDefault(_:)), keyEquivalent: "")
+			let handlerName = defaultBrowserBundle?.infoDictionary?["CFBundleName"] as? String ?? defaultBrowserBundle?.bundleIdentifier
+			
+			menu.addItem(withTitle: "Default http handler: \(handlerName ?? "not me") ☹️", action: nil, keyEquivalent: "")
+			menu.addItem(withTitle: "⚠️ For Overbrowsered to work, click here to set it as the default \"browser\".", action: #selector(self.menuBarSetDefault(_:)), keyEquivalent: "")
 		}
 		
 		menu.addItem(NSMenuItem.separator())
@@ -103,16 +103,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	// Try setting this app as the default handler for http(s), per user request:
 	
 	@objc func menuBarSetDefault(_ sender: Any?) {
-        guard Bundle.main.bundlePath.starts(with: "/Applications/") else {
-            let alert = NSAlert.init()
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "OK")
-            alert.messageText = "Please move Overbrowsered to your Applications folder."
-            alert.informativeText = "You will run into issues if you move Overbrowsered after setting it as the default browser. Please move it into Applications beforehand."
-            alert.runModal()
-            return
-        }
-        
+		guard Bundle.main.bundlePath.starts(with: "/Applications/") else {
+			let alert = NSAlert.init()
+			alert.alertStyle = .informational
+			alert.addButton(withTitle: "OK")
+			alert.messageText = "Please move Overbrowsered to your Applications folder."
+			alert.informativeText = "You will run into issues if you move Overbrowsered after setting it as the default browser. Please move it into Applications beforehand."
+			alert.runModal()
+			return
+		}
+		
 		if let bundleId = Bundle.main.bundleIdentifier {
 			LSSetDefaultHandlerForURLScheme("http" as CFString, bundleId as CFString)
 			LSSetDefaultHandlerForURLScheme("https" as CFString, bundleId as CFString)
@@ -131,30 +131,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			return
 		}
 		
-        let appIsABrowser =
-            (appBundle.infoDictionary?["CFBundleURLTypes"] as? [[String:Any?]])?
-            .map { urlType in urlType["CFBundleURLSchemes"] as? [String?] }
-            .contains { schemes in
-                schemes?.contains { scheme in scheme == "http" || scheme == "https" } ?? false
-            }
-            ?? false
+		let appIsABrowser =
+			(appBundle.infoDictionary?["CFBundleURLTypes"] as? [[String:Any?]])?
+			.map { urlType in urlType["CFBundleURLSchemes"] as? [String?] }
+			.contains { schemes in
+				schemes?.contains { scheme in scheme == "http" || scheme == "https" } ?? false
+			}
+			?? false
 		
 		if appIsABrowser {
 			self.mostRecentlyUsedBrowser = appBundle
 		}
 	}
-    
+	
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
-        if let browserBundleId = mostRecentlyUsedBrowser?.bundleIdentifier {
-            NSWorkspace.shared.open(
-                filenames.map { URL.init(fileURLWithPath: $0).standardized },
-                withAppBundleIdentifier: browserBundleId,
-                options: .default,
-                additionalEventParamDescriptor: nil,
-                launchIdentifiers: nil
-            )
-        }
-    }
+		if let browserBundleId = mostRecentlyUsedBrowser?.bundleIdentifier {
+			NSWorkspace.shared.open(
+				filenames.map { URL.init(fileURLWithPath: $0).standardized },
+				withAppBundleIdentifier: browserBundleId,
+				options: .default,
+				additionalEventParamDescriptor: nil,
+				launchIdentifiers: nil
+			)
+		}
+	}
 	
 	@objc func handleHttpLink(getUrl: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
 		

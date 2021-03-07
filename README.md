@@ -5,3 +5,6 @@ This app will make your macOS open links in the most recently used browser, inst
 
 ## Privacy policy
 The app does not persist nor send any information.
+
+## Support
+Please [file an issue](https://github.com/bmisiak/overbrowsered/issues/new) if you encounter any problems.

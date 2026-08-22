@@ -7,7 +7,7 @@ import Cocoa
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private static let excludedBrowserBundleIdentifiers: Set<String> = [
-		"com.openai.codex", // ChatGPT desktop app (formerly Codex)
+		"com.openai.codex",
 	]
 
 	var menubarIcon: NSStatusItem?
@@ -65,6 +65,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 		self.menubarIcon = NSStatusBar.system.statusItem(withLength:NSStatusItem.squareLength)
 		self.menubarIcon?.button?.image = NSImage(named: "StatusBarButtonImage")
+		self.menubarIcon?.button?.setAccessibilityLabel("Overbrowsered")
 
 		let menu = NSMenu()
 		menu.delegate = self
@@ -116,9 +117,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			return
 		}
 
-		if let bundleId = Bundle.main.bundleIdentifier {
-			LSSetDefaultHandlerForURLScheme("http" as CFString, bundleId as CFString)
-			LSSetDefaultHandlerForURLScheme("https" as CFString, bundleId as CFString)
+		setDefaultApplication(for: ["http", "https"])
+	}
+
+	private func setDefaultApplication(for schemes: ArraySlice<String>) {
+		guard let scheme = schemes.first else { return }
+
+		NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL, toOpenURLsWithScheme: scheme) { error in
+			DispatchQueue.main.async {
+				if let error {
+					let alert = NSAlert()
+					alert.alertStyle = .warning
+					alert.addButton(withTitle: "OK")
+					alert.messageText = "Overbrowsered couldn't become the default link handler."
+					alert.informativeText = error.localizedDescription
+					alert.runModal()
+					return
+				}
+
+				self.setDefaultApplication(for: schemes.dropFirst())
+			}
 		}
 	}
 
@@ -151,15 +169,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	}
 
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
-		if let browserBundleId = mostRecentlyUsedBrowser?.bundleIdentifier {
-			NSWorkspace.shared.open(
-				filenames.map { URL.init(fileURLWithPath: $0).standardized },
-				withAppBundleIdentifier: browserBundleId,
-				options: .default,
-				additionalEventParamDescriptor: nil,
-				launchIdentifiers: nil
-			)
-		}
+		open(filenames.map { URL(fileURLWithPath: $0).standardized }, reportsErrors: false)
 	}
 
 	@objc func handleHttpLink(getUrl: NSAppleEventDescriptor, withReplyEvent: NSAppleEventDescriptor) {
@@ -167,8 +177,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		guard let urlStr = getUrl.paramDescriptor(forKeyword: keyDirectObject)?.stringValue else { return }
 		guard let url = URL(string: urlStr) else { return }
 
-		if let browserBundleId = mostRecentlyUsedBrowser?.bundleIdentifier {
-			NSWorkspace.shared.open([url], withAppBundleIdentifier: browserBundleId, options: .default, additionalEventParamDescriptor: nil, launchIdentifiers: nil)
+		if mostRecentlyUsedBrowser != nil {
+			open([url], reportsErrors: true)
 		} else {
 			let alert = NSAlert.init()
 			alert.alertStyle = .informational
@@ -176,6 +186,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			alert.messageText = "Overbrowsered has yet to see you use a browser."
 			alert.informativeText = "Open a web browser and click its window, so I can know where to open this link:\n\n\(urlStr)"
 			alert.runModal()
+		}
+	}
+
+	private func open(_ urls: [URL], reportsErrors: Bool) {
+		guard let browserBundleURL = mostRecentlyUsedBrowser?.bundleURL else { return }
+
+		let configuration = NSWorkspace.OpenConfiguration()
+		configuration.createsNewApplicationInstance = false
+		configuration.requiresUniversalLinks = false
+
+		NSWorkspace.shared.open(urls, withApplicationAt: browserBundleURL, configuration: configuration) { _, error in
+			guard reportsErrors, let error else { return }
+
+			DispatchQueue.main.async {
+				let alert = NSAlert()
+				alert.alertStyle = .warning
+				alert.addButton(withTitle: "OK")
+				alert.messageText = "Overbrowsered couldn't open the link."
+				alert.informativeText = error.localizedDescription
+				alert.runModal()
+			}
 		}
 	}
 

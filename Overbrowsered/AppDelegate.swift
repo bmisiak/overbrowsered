@@ -78,7 +78,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	public func menuNeedsUpdate(_ menu: NSMenu) {
 		menu.removeAllItems()
 
-		menu.addItem(withTitle: "Overbrowsered by @bmisiak", action: nil, keyEquivalent: "")
+		menu.addItem(withTitle: "Overbrowsered by @ibmisiak", action: #selector(self.openOverbrowseredWebsite), keyEquivalent: "")
 		menu.addItem(NSMenuItem.separator())
 
 		menu.addItem(withTitle: "Most recently used browser: \(self.mostRecentlyUsedBrowser?.infoDictionary?["CFBundleName"] as? String ?? "Unknown (use any browser to detect)")", action: nil, keyEquivalent: "")
@@ -104,6 +104,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 	}
 
+	@objc private func openOverbrowseredWebsite() {
+		open([URL(string: "https://bmisiak.com/#overbrowsered")!], reportsErrors: true)
+	}
+
 	// Try setting this app as the default handler for http(s), per user request:
 
 	@objc func menuBarSetDefault(_ sender: Any?) {
@@ -117,27 +121,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			return
 		}
 
-		setDefaultApplication(for: ["http", "https"])
-	}
-
-	private func setDefaultApplication(for schemes: [String], at index: Int = 0) {
-		guard schemes.indices.contains(index) else { return }
-
-		NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL, toOpenURLsWithScheme: schemes[index]) { error in
-			DispatchQueue.main.async {
-				if let error {
-					let alert = NSAlert()
-					alert.alertStyle = .warning
-					alert.addButton(withTitle: "OK")
-					alert.messageText = "Overbrowsered couldn't become the default link handler."
-					alert.informativeText = error.localizedDescription
-					alert.runModal()
-					return
-				}
-
-				self.setDefaultApplication(for: schemes, at: index + 1)
+		Task { @MainActor in
+			do {
+				try await self.setDefaultApplication(scheme: "http")
+				try await self.setDefaultApplication(scheme: "https")
+			} catch {
+				let alert = NSAlert()
+				alert.alertStyle = .warning
+				alert.addButton(withTitle: "OK")
+				alert.messageText = "Overbrowsered couldn't become the default link handler."
+				alert.informativeText = error.localizedDescription
+				alert.runModal()
 			}
 		}
+	}
+
+	private func setDefaultApplication(scheme: String) async throws {
+		try await NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL, toOpenURLsWithScheme: scheme)
 	}
 
 	// The user brought another app to the foreground, let's see if it's a browser:

@@ -120,10 +120,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		setDefaultApplication(for: ["http", "https"])
 	}
 
-	private func setDefaultApplication(for schemes: ArraySlice<String>) {
-		guard let scheme = schemes.first else { return }
+	private func setDefaultApplication(for schemes: [String], at index: Int = 0) {
+		guard schemes.indices.contains(index) else { return }
 
-		NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL, toOpenURLsWithScheme: scheme) { error in
+		NSWorkspace.shared.setDefaultApplication(at: Bundle.main.bundleURL, toOpenURLsWithScheme: schemes[index]) { error in
 			DispatchQueue.main.async {
 				if let error {
 					let alert = NSAlert()
@@ -135,7 +135,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 					return
 				}
 
-				self.setDefaultApplication(for: schemes.dropFirst())
+				self.setDefaultApplication(for: schemes, at: index + 1)
 			}
 		}
 	}

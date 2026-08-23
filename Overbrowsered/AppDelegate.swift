@@ -10,6 +10,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		"com.openai.codex",
 		"com.googlecode.iterm2",
 	]
+	private var userExcludedBrowserBundleIdentifiers = UserDefaults.standard.stringArray(forKey: "excludedBrowserBundleIdentifiers") ?? [] {
+		didSet { UserDefaults.standard.set(userExcludedBrowserBundleIdentifiers, forKey: "excludedBrowserBundleIdentifiers") }
+	}
 
 	var menubarIcon: NSStatusItem?
 
@@ -43,7 +46,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 				let defaultBrowserBundle = Bundle(url: defaultBrowserUrl)
 				// But only if the default handler is not Overbrowsered.
-				if defaultBrowserBundle != Bundle.main {
+				if let defaultBrowserBundle, defaultBrowserBundle != Bundle.main, !self.isExcluded(defaultBrowserBundle) {
 					self.mostRecentlyUsedBrowser = defaultBrowserBundle
 				}
 			}
@@ -82,7 +85,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		menu.addItem(withTitle: "Overbrowsered by @ibmisiak", action: #selector(self.openOverbrowseredWebsite), keyEquivalent: "")
 		menu.addItem(NSMenuItem.separator())
 
-		menu.addItem(withTitle: "Most recently used browser: \(self.mostRecentlyUsedBrowser?.infoDictionary?["CFBundleName"] as? String ?? "Unknown (use any browser to detect)")", action: nil, keyEquivalent: "")
+		menu.addItem(withTitle: "Most recently used browser: \(self.browserName(self.mostRecentlyUsedBrowser) ?? "Unknown (use any browser to detect)")", action: nil, keyEquivalent: "")
 
 		//Detect the default handler status
 		var defaultBrowserBundle: Bundle?
@@ -95,14 +98,65 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 		} else if defaultBrowserBundle?.bundleIdentifier == Bundle.main.bundleIdentifier {
 			menu.addItem(withTitle: "Default http handler: Overbrowsered", action: nil, keyEquivalent: "")
 		} else {
-			let handlerName = defaultBrowserBundle?.infoDictionary?["CFBundleName"] as? String ?? defaultBrowserBundle?.bundleIdentifier
+			let handlerName = self.browserName(defaultBrowserBundle)
 
 			menu.addItem(withTitle: "Default http handler: \(handlerName ?? "not me") ☹️", action: nil, keyEquivalent: "")
 			menu.addItem(withTitle: "⚠️ For Overbrowsered to work, click here to set it as the default \"browser\".", action: #selector(self.menuBarSetDefault(_:)), keyEquivalent: "")
 		}
 
+		if self.mostRecentlyUsedBrowser != nil || !self.userExcludedBrowserBundleIdentifiers.isEmpty {
+			menu.addItem(NSMenuItem.separator())
+
+			if let browser = self.mostRecentlyUsedBrowser, !self.isExcluded(browser) {
+				let item = menu.addItem(withTitle: "Stop treating \(self.browserName(browser) ?? "[name unknown]") as a browser…", action: #selector(self.excludeBrowser(_:)), keyEquivalent: "")
+				item.representedObject = browser
+			}
+
+			for bundleIdentifier in self.userExcludedBrowserBundleIdentifiers {
+				let item = menu.addItem(withTitle: "Unignore \(self.browserName(bundleIdentifier))...", action: #selector(self.restoreBrowser(_:)), keyEquivalent: "")
+				item.representedObject = bundleIdentifier
+			}
+		}
+
 		menu.addItem(NSMenuItem.separator())
 		menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+	}
+
+	@objc private func excludeBrowser(_ sender: NSMenuItem) {
+		guard let browser = sender.representedObject as? Bundle, let bundleIdentifier = browser.bundleIdentifier, let name = self.browserName(browser), self.confirm("Stop treating \(name) as a browser?", "Overbrowsered will stop opening links in \(name). You can undo this from the menu.", "Stop Treating as Browser") else { return }
+
+		self.userExcludedBrowserBundleIdentifiers.append(bundleIdentifier)
+		self.mostRecentlyUsedBrowser = nil
+		UserDefaults.standard.removeObject(forKey: "mostRecentBrowserBundleUrl")
+	}
+
+	@objc private func restoreBrowser(_ sender: NSMenuItem) {
+		guard let bundleIdentifier = sender.representedObject as? String, self.confirm("Treat \(self.browserName(bundleIdentifier)) as a browser again?", "Overbrowsered will go back to opening links in \(self.browserName(bundleIdentifier)) after you use it.", "Treat as Browser") else { return }
+
+		self.userExcludedBrowserBundleIdentifiers.removeAll { $0 == bundleIdentifier }
+	}
+
+	private func confirm(_ message: String, _ information: String, _ button: String) -> Bool {
+		let alert = NSAlert()
+		alert.messageText = message
+		alert.informativeText = information
+		alert.addButton(withTitle: button)
+		alert.addButton(withTitle: "Cancel")
+		return alert.runModal() == .alertFirstButtonReturn
+	}
+
+	private func browserName(_ browser: Bundle?) -> String? {
+		browser?.infoDictionary?["CFBundleName"] as? String ?? browser?.bundleIdentifier
+	}
+
+	private func browserName(_ bundleIdentifier: String) -> String {
+		let bundle = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier).flatMap(Bundle.init(url:))
+		return self.browserName(bundle) ?? bundleIdentifier
+	}
+
+	private func isExcluded(_ browser: Bundle) -> Bool {
+		guard let bundleIdentifier = browser.bundleIdentifier else { return false }
+		return Self.excludedBrowserBundleIdentifiers.contains(bundleIdentifier) || self.userExcludedBrowserBundleIdentifiers.contains(bundleIdentifier)
 	}
 
 	@objc private func openOverbrowseredWebsite() {
@@ -152,9 +206,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			//Let's avoid detecting this app as a browser, which could cause an infinite loop of passing http links to itself
 			return
 		}
-		if let bundleIdentifier = appBundle.bundleIdentifier, Self.excludedBrowserBundleIdentifiers.contains(bundleIdentifier) {
-			return
-		}
 
 		let appIsABrowser =
 			(appBundle.infoDictionary?["CFBundleURLTypes"] as? [[String:Any?]])?
@@ -164,7 +215,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			}
 			?? false
 
-		if appIsABrowser {
+		if appIsABrowser && !self.isExcluded(appBundle) {
 			self.mostRecentlyUsedBrowser = appBundle
 		}
 	}
@@ -182,10 +233,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 			open([url], reportsErrors: true)
 		} else {
 			let alert = NSAlert.init()
+			let ignoredBrowsers = self.userExcludedBrowserBundleIdentifiers.map { "• \(self.browserName($0))" }
 			alert.alertStyle = .informational
 			alert.addButton(withTitle: "OK")
 			alert.messageText = "Overbrowsered has yet to see you use a browser."
-			alert.informativeText = "Open a web browser and click its window, so I can know where to open this link:\n\n\(urlStr)"
+			alert.informativeText = "Open a web browser and click its window, so I can know where to open this link:\n\n\(urlStr)" + (ignoredBrowsers.isEmpty ? "" : "\n\nIgnored browsers:\n\(ignoredBrowsers.joined(separator: "\n"))")
 			alert.runModal()
 		}
 	}

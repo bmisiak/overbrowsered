@@ -8,6 +8,7 @@ import Cocoa
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 	private static let excludedBrowserBundleIdentifiers: Set<String> = [
 		"com.openai.codex",
+		"com.googlecode.iterm2",
 	]
 
 	var menubarIcon: NSStatusItem?

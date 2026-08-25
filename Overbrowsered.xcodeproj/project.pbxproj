@@ -11,6 +11,7 @@
 		80DE773920B1A7ED00C6973D /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80DE773820B1A7ED00C6973D /* AppDelegate.swift */; };
 		80DE773D20B1A7EE00C6973D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 80DE773C20B1A7EE00C6973D /* Assets.xcassets */; };
 		80DE775120B1A7EE00C6973D /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 80DE775020B1A7EE00C6973D /* PrivacyInfo.xcprivacy */; };
+		80DE775320B1A7EE00C6973D /* AppIcon.icon in Resources */ = {isa = PBXBuildFile; fileRef = 80DE775220B1A7EE00C6973D /* AppIcon.icon */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +22,7 @@
 		80DE774120B1A7EE00C6973D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		80DE774220B1A7EE00C6973D /* Overbrowsered.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Overbrowsered.entitlements; sourceTree = "<group>"; };
 		80DE775020B1A7EE00C6973D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		80DE775220B1A7EE00C6973D /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.icon; path = AppIcon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -54,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				80DE773820B1A7ED00C6973D /* AppDelegate.swift */,
+				80DE775220B1A7EE00C6973D /* AppIcon.icon */,
 				80DE773C20B1A7EE00C6973D /* Assets.xcassets */,
 				80DE774120B1A7EE00C6973D /* Info.plist */,
 				80DE774220B1A7EE00C6973D /* Overbrowsered.entitlements */,
@@ -128,6 +131,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				80DE775320B1A7EE00C6973D /* AppIcon.icon in Resources */,
 				80DE773D20B1A7EE00C6973D /* Assets.xcassets in Resources */,
 				80DE775120B1A7EE00C6973D /* PrivacyInfo.xcprivacy in Resources */,
 			);

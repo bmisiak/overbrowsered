@@ -15,14 +15,16 @@ ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 zbus = "5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-tray-icon = "0.24"
 winreg = "0.56"
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-sys]
 version = "0.61"
 features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]

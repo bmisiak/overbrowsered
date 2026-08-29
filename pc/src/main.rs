@@ -10,12 +10,6 @@ use linux as platform;
 #[cfg(target_os = "windows")]
 use windows as platform;
 
-#[derive(Clone)]
-struct Browser {
-    id: String,
-    display_name: String,
-}
-
 fn main() {
     let links: Vec<String> = std::env::args().skip(1).collect();
     if links.is_empty() {
@@ -28,16 +22,9 @@ fn main() {
     let _ = Command::new(&argv[0]).args(&argv[1..]).args(links).spawn();
 }
 
-fn most_recently_used_browser_line(browser: Option<&Browser>) -> String {
-    format!(
-        "Most recently used browser: {}",
-        browser.map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
-    )
-}
-
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AUTHOR_LINE, Browser, most_recently_used_browser_line};
+    use super::{AUTHOR_LINE, NO_BROWSER_SEEN_YET};
     use atspi::events::window::ActivateEvent;
     use atspi::{AccessibilityConnection, Event, WindowEvents};
     use freedesktop_desktop_entry::{
@@ -52,6 +39,28 @@ mod linux {
 
     const TRAY_ICON_ARGB: &[u8] = include_bytes!("../icons/tray-22.argb");
     const DESKTOP_FILE: &str = "overbrowsered.desktop";
+
+    #[derive(Clone, PartialEq)]
+    enum RecognisedBy {
+        Executable(String),
+        FlatpakApp(String),
+    }
+
+    #[derive(Clone)]
+    struct Browser {
+        appid: String,
+        display_name: String,
+        recognised_by: RecognisedBy,
+    }
+
+    impl Browser {
+        fn is_running_as(&self, executable: Option<&str>, flatpak_app: Option<&str>) -> bool {
+            match &self.recognised_by {
+                RecognisedBy::Executable(name) => Some(name.as_str()) == executable,
+                RecognisedBy::FlatpakApp(app) => Some(app.as_str()) == flatpak_app,
+            }
+        }
+    }
 
     struct Overbrowsered {
         browser: Option<Browser>,
@@ -71,7 +80,7 @@ mod linux {
         }
 
         fn menu(&self) -> Vec<MenuItem<Self>> {
-            let disabled = |label: String| {
+            let unclickable = |label: String| {
                 StandardItem {
                     label,
                     enabled: false,
@@ -80,9 +89,14 @@ mod linux {
                 .into()
             };
             vec![
-                disabled(AUTHOR_LINE.into()),
+                unclickable(AUTHOR_LINE.into()),
                 MenuItem::Separator,
-                disabled(most_recently_used_browser_line(self.browser.as_ref())),
+                unclickable(format!(
+                    "Most recently used browser: {}",
+                    self.browser
+                        .as_ref()
+                        .map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
+                )),
                 MenuItem::Separator,
                 StandardItem {
                     label: "Quit".into(),
@@ -100,26 +114,25 @@ mod linux {
 
     async fn serve() {
         register_as_link_handler();
-        let browsers = installed_browsers();
-        let remembered = remembered_browser()
-            .and_then(|id| browsers.iter().find(|(_, browser)| browser.id == id))
-            .map(|(_, browser)| browser.clone());
+        let installed = installed_browsers();
         let tray = Overbrowsered {
-            browser: remembered,
+            browser: remembered_browser()
+                .and_then(|appid| installed.iter().find(|browser| browser.appid == appid))
+                .cloned(),
         }
         .assume_sni_available(true)
         .spawn()
         .await
         .expect("the session bus is reachable");
 
-        if watch_for_browser_activations(&browsers, &tray).await.is_none() {
+        if watch_for_activations(&installed, &tray).await.is_none() {
             eprintln!("Overbrowsered cannot detect browsers: the accessibility bus is unavailable.");
         }
         std::future::pending::<()>().await
     }
 
-    async fn watch_for_browser_activations(
-        browsers: &[(String, Browser)],
+    async fn watch_for_activations(
+        installed: &[Browser],
         tray: &ksni::Handle<Overbrowsered>,
     ) -> Option<()> {
         let accessibility = AccessibilityConnection::new().await.ok()?;
@@ -140,22 +153,22 @@ mod linux {
             else {
                 continue;
             };
-            let executable_name = executable_name(process);
-            let flatpak_app_id = flatpak_app_id(process);
-            let Some((_, browser)) = browsers.iter().find(|(known_as, _)| {
-                Some(known_as) == flatpak_app_id.as_ref() || Some(known_as) == executable_name.as_ref()
+            let executable = executable_name(process);
+            let flatpak_app = flatpak_app_id(process);
+            let Some(browser) = installed.iter().find(|browser| {
+                browser.is_running_as(executable.as_deref(), flatpak_app.as_deref())
             }) else {
                 continue;
             };
-            let changed = tray
+            let newly_activated = tray
                 .update(|tray| {
-                    let changed = tray.browser.as_ref().map(|b| &b.id) != Some(&browser.id);
+                    let newly_activated = tray.browser.as_ref().map(|b| &b.appid) != Some(&browser.appid);
                     tray.browser = Some(browser.clone());
-                    changed
+                    newly_activated
                 })
                 .await;
-            if changed == Some(true) {
-                remember(&browser.id);
+            if newly_activated == Some(true) {
+                remember(&browser.appid);
             }
         }
         Some(())
@@ -175,7 +188,7 @@ mod linux {
         Some(info.lines().find_map(|line| line.strip_prefix("name="))?.to_owned())
     }
 
-    fn installed_browsers() -> Vec<(String, Browser)> {
+    fn installed_browsers() -> Vec<Browser> {
         let locales = get_languages_from_env();
         desktop_entries(&locales)
             .iter()
@@ -184,18 +197,18 @@ mod linux {
                 if !entry.mime_type()?.contains(&"x-scheme-handler/http") {
                     return None;
                 }
-                let argv = exec_argv(entry.exec()?);
-                let browser = Browser {
-                    id: entry.appid.clone(),
+                Some(Browser {
+                    appid: entry.appid.clone(),
                     display_name: entry
                         .name(&locales)
                         .map_or_else(|| entry.appid.clone(), |name| name.into_owned()),
-                };
-                let known_as = match entry.flatpak() {
-                    Some(app_id) => app_id.to_owned(),
-                    None => file_name(Path::new(argv.first()?))?.to_owned(),
-                };
-                Some((known_as, browser))
+                    recognised_by: match entry.flatpak() {
+                        Some(app) => RecognisedBy::FlatpakApp(app.to_owned()),
+                        None => RecognisedBy::Executable(
+                            file_name(Path::new(exec_argv(entry.exec()?).first()?))?.to_owned(),
+                        ),
+                    },
+                })
             })
             .collect()
     }
@@ -245,8 +258,8 @@ mod linux {
     }
 
     pub fn remembered_browser() -> Option<String> {
-        let id = std::fs::read_to_string(config_directory().join("browser")).ok()?;
-        Some(id.trim().to_owned())
+        let appid = std::fs::read_to_string(config_directory().join("browser")).ok()?;
+        Some(appid.trim().to_owned())
     }
 
     fn remember(appid: &str) {
@@ -261,68 +274,128 @@ mod linux {
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::{AUTHOR_LINE, Browser, most_recently_used_browser_line};
+    use super::{AUTHOR_LINE, NO_BROWSER_SEEN_YET};
     use std::cell::RefCell;
-    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
-    use tray_icon::{Icon, TrayIconBuilder};
-    use windows_sys::Win32::Foundation::{CloseHandle, HWND};
+    use std::sync::atomic::{AtomicIsize, Ordering};
+    use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
     };
     use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetMessageW, GetWindowThreadProcessId,
-        TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    };
+    use windows_sys::Win32::UI::Shell::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
     use winreg::RegKey;
     use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
-    const TRAY_ICON_RGBA: &[u8] = include_bytes!("../icons/tray-44.rgba");
-    const REMEMBERED_BROWSER_KEY: &str = "Software\\Overbrowsered";
+    const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-44.icon");
     const OUR_PROGRAM_ID: &str = "Overbrowsered.Url";
+    const REMEMBERED_BROWSER_KEY: &str = "Software\\Overbrowsered";
+    const WM_TRAY_ICON: u32 = WM_APP + 1;
+    const WM_BROWSER_ACTIVATED: u32 = WM_APP + 2;
+    const QUIT_MENU_ITEM: usize = 1;
+
+    static OVERBROWSERED_WINDOW: AtomicIsize = AtomicIsize::new(0);
 
     thread_local! {
-        static BROWSER_LINE: MenuItem = MenuItem::new("", false, None);
-        static INSTALLED_BROWSERS: Vec<(String, Browser)> = installed_browsers();
-        static REMEMBERED_BROWSER: RefCell<Option<Browser>> = RefCell::new(
-            remembered_browser().and_then(|id| {
-                INSTALLED_BROWSERS.with(|browsers| {
-                    browsers
-                        .iter()
-                        .find(|(_, browser)| browser.id == id)
-                        .map(|(_, browser)| browser.clone())
-                })
-            }),
-        );
+        static OVERBROWSERED: Overbrowsered = Overbrowsered::new();
+    }
+
+    #[derive(Clone)]
+    struct Browser {
+        program_id: String,
+        display_name: String,
+        executable_path: String,
+    }
+
+    struct Overbrowsered {
+        installed: Vec<Browser>,
+        remembered: RefCell<Option<Browser>>,
+    }
+
+    impl Overbrowsered {
+        fn new() -> Self {
+            let installed = installed_browsers();
+            Self {
+                remembered: RefCell::new(
+                    remembered_browser()
+                        .and_then(|id| installed.iter().find(|b| b.program_id == id))
+                        .cloned(),
+                ),
+                installed,
+            }
+        }
+
+        fn foreground_changed(&self, window: HWND) {
+            let Some(executable) = (unsafe { executable_path_of_window(window) }) else {
+                return;
+            };
+            let executable = executable.to_lowercase();
+            let Some(browser) = self
+                .installed
+                .iter()
+                .find(|browser| browser.executable_path == executable)
+            else {
+                return;
+            };
+            let mut remembered = self.remembered.borrow_mut();
+            if remembered.as_ref().map(|b| &b.program_id) == Some(&browser.program_id) {
+                return;
+            }
+            remember(&browser.program_id);
+            *remembered = Some(browser.clone());
+        }
+
+        fn show_menu(&self, window: HWND) {
+            let browser_line = format!(
+                "Most recently used browser: {}",
+                self.remembered
+                    .borrow()
+                    .as_ref()
+                    .map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
+            );
+            unsafe {
+                let menu = CreatePopupMenu();
+                AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, utf16(AUTHOR_LINE).as_ptr());
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                AppendMenuW(menu, MF_STRING | MF_DISABLED, 0, utf16(&browser_line).as_ptr());
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+                AppendMenuW(menu, MF_STRING, QUIT_MENU_ITEM, utf16("Quit").as_ptr());
+
+                let mut cursor = POINT { x: 0, y: 0 };
+                GetCursorPos(&mut cursor);
+                SetForegroundWindow(window);
+                let chosen = TrackPopupMenu(
+                    menu,
+                    TPM_RETURNCMD,
+                    cursor.x,
+                    cursor.y,
+                    0,
+                    window,
+                    std::ptr::null(),
+                );
+                DestroyMenu(menu);
+                if chosen as usize == QUIT_MENU_ITEM {
+                    PostQuitMessage(0);
+                }
+            }
+        }
+    }
+
+    fn utf16(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain([0]).collect()
     }
 
     pub fn watch_for_browsers_and_serve_menu() {
         register_as_link_handler();
-        INSTALLED_BROWSERS.with(|_| ());
-        REMEMBERED_BROWSER.with(|_| ());
-
-        REMEMBERED_BROWSER.with_borrow(|browser| show_in_menu(browser.as_ref()));
-        let menu = Menu::new();
-        BROWSER_LINE.with(|browser_line| {
-            let _ = menu.append_items(&[
-                &MenuItem::new(AUTHOR_LINE, false, None),
-                &PredefinedMenuItem::separator(),
-                browser_line,
-                &PredefinedMenuItem::separator(),
-                &PredefinedMenuItem::quit(Some("Quit")),
-            ]);
-        });
-
-        let _tray = TrayIconBuilder::new()
-            .with_icon(
-                Icon::from_rgba(TRAY_ICON_RGBA.to_vec(), 44, 44).expect("the embedded icon is rgba"),
-            )
-            .with_tooltip("Overbrowsered")
-            .with_menu(Box::new(menu))
-            .build()
-            .expect("the tray icon can be created");
+        OVERBROWSERED.with(|_| ());
 
         unsafe {
+            let window = create_window();
+            OVERBROWSERED_WINDOW.store(window as isize, Ordering::Relaxed);
+            let mut icon = tray_icon(window);
+            Shell_NotifyIconW(NIM_ADD, &icon);
+
             SetWinEventHook(
                 EVENT_SYSTEM_FOREGROUND,
                 EVENT_SYSTEM_FOREGROUND,
@@ -334,15 +407,87 @@ mod windows {
             );
 
             let mut message = std::mem::zeroed();
-            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) != 0 {
+            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
+            Shell_NotifyIconW(NIM_DELETE, &mut icon);
         }
     }
 
-    fn show_in_menu(browser: Option<&Browser>) {
-        BROWSER_LINE.with(|line| line.set_text(most_recently_used_browser_line(browser)));
+    unsafe fn create_window() -> HWND {
+        let class_name = utf16("Overbrowsered");
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(window_proc),
+            hInstance: instance,
+            lpszClassName: class_name.as_ptr(),
+            ..unsafe { std::mem::zeroed() }
+        };
+        unsafe { RegisterClassW(&class) };
+        unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                class_name.as_ptr(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            )
+        }
+    }
+
+    unsafe fn tray_icon(window: HWND) -> NOTIFYICONDATAW {
+        let mut icon: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+        icon.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+        icon.hWnd = window;
+        icon.uID = 1;
+        icon.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        icon.uCallbackMessage = WM_TRAY_ICON;
+        icon.hIcon = unsafe {
+            CreateIconFromResourceEx(
+                TRAY_ICON.as_ptr(),
+                TRAY_ICON.len() as u32,
+                1,
+                0x0003_0000,
+                0,
+                0,
+                LR_DEFAULTCOLOR,
+            )
+        };
+        for (slot, character) in icon.szTip.iter_mut().zip(utf16("Overbrowsered")) {
+            *slot = character;
+        }
+        icon
+    }
+
+    unsafe extern "system" fn window_proc(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        match message {
+            WM_BROWSER_ACTIVATED => {
+                OVERBROWSERED.with(|overbrowsered| overbrowsered.foreground_changed(wparam as HWND));
+                0
+            }
+            WM_TRAY_ICON if matches!(lparam as u32, WM_LBUTTONUP | WM_RBUTTONUP) => {
+                OVERBROWSERED.with(|overbrowsered| overbrowsered.show_menu(window));
+                0
+            }
+            WM_DESTROY => {
+                unsafe { PostQuitMessage(0) };
+                0
+            }
+            _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+        }
     }
 
     unsafe extern "system" fn on_foreground_window_changed(
@@ -354,26 +499,10 @@ mod windows {
         _thread: u32,
         _time: u32,
     ) {
-        let Some(executable) = (unsafe { executable_path_of_window(window) }) else {
-            return;
-        };
-        let executable = executable.to_lowercase();
-        let Some(browser) = INSTALLED_BROWSERS.with(|browsers| {
-            browsers
-                .iter()
-                .find(|(candidate, _)| *candidate == executable)
-                .map(|(_, browser)| browser.clone())
-        }) else {
-            return;
-        };
-        REMEMBERED_BROWSER.with_borrow_mut(|remembered| {
-            if remembered.as_ref().map(|b| &b.id) == Some(&browser.id) {
-                return;
-            }
-            remember(&browser.id);
-            show_in_menu(Some(&browser));
-            *remembered = Some(browser);
-        });
+        let ours = OVERBROWSERED_WINDOW.load(Ordering::Relaxed) as HWND;
+        if !ours.is_null() {
+            unsafe { PostMessageW(ours, WM_BROWSER_ACTIVATED, window as WPARAM, 0) };
+        }
     }
 
     unsafe fn executable_path_of_window(window: HWND) -> Option<String> {
@@ -391,7 +520,7 @@ mod windows {
         (queried != 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
     }
 
-    fn installed_browsers() -> Vec<(String, Browser)> {
+    fn installed_browsers() -> Vec<Browser> {
         let mut browsers = Vec::new();
         for predefined in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
             let root = RegKey::predef(predefined);
@@ -416,26 +545,24 @@ mod windows {
                 if program_id == OUR_PROGRAM_ID {
                     continue;
                 }
-                let Some(argv) = launch_argv(&program_id) else {
+                let Some(executable_path) = command_executable(&program_id) else {
                     continue;
                 };
-                browsers.push((
-                    argv[0].to_lowercase(),
-                    Browser {
-                        id: program_id,
-                        display_name: capabilities
-                            .get_value::<String, _>("ApplicationName")
-                            .ok()
-                            .filter(|name| !name.starts_with('@'))
-                            .unwrap_or(registered_name),
-                    },
-                ));
+                browsers.push(Browser {
+                    display_name: capabilities
+                        .get_value::<String, _>("ApplicationName")
+                        .ok()
+                        .filter(|name| !name.starts_with('@'))
+                        .unwrap_or(registered_name),
+                    executable_path: executable_path.to_lowercase(),
+                    program_id,
+                });
             }
         }
         browsers
     }
 
-    pub fn launch_argv(program_id: &str) -> Option<Vec<String>> {
+    fn command_executable(program_id: &str) -> Option<String> {
         let command = RegKey::predef(HKEY_CLASSES_ROOT)
             .open_subkey(format!("{program_id}\\shell\\open\\command"))
             .ok()?
@@ -446,7 +573,11 @@ mod windows {
             Some(quoted) => quoted.split('"').next()?,
             None => command.split_whitespace().next()?,
         };
-        Some(vec![executable.to_owned()])
+        Some(executable.to_owned())
+    }
+
+    pub fn launch_argv(program_id: &str) -> Option<Vec<String>> {
+        Some(vec![command_executable(program_id)?])
     }
 
     fn register_as_link_handler() {
@@ -458,9 +589,11 @@ mod windows {
             user.create_subkey(format!("Software\\Classes\\{OUR_PROGRAM_ID}"))?
                 .0
                 .set_value("", &"Overbrowsered URL Handler".to_owned())?;
-            user.create_subkey(format!("Software\\Classes\\{OUR_PROGRAM_ID}\\shell\\open\\command"))?
-                .0
-                .set_value("", &format!("\"{}\" \"%1\"", executable.display()))?;
+            user.create_subkey(format!(
+                "Software\\Classes\\{OUR_PROGRAM_ID}\\shell\\open\\command"
+            ))?
+            .0
+            .set_value("", &format!("\"{}\" \"%1\"", executable.display()))?;
             let capabilities = user
                 .create_subkey(format!("{REMEMBERED_BROWSER_KEY}\\Capabilities"))?
                 .0;
@@ -470,13 +603,18 @@ mod windows {
                 &"Opens links in your most recently used browser".to_owned(),
             )?;
             let associations = user
-                .create_subkey(format!("{REMEMBERED_BROWSER_KEY}\\Capabilities\\URLAssociations"))?
+                .create_subkey(format!(
+                    "{REMEMBERED_BROWSER_KEY}\\Capabilities\\URLAssociations"
+                ))?
                 .0;
             associations.set_value("http", &OUR_PROGRAM_ID.to_owned())?;
             associations.set_value("https", &OUR_PROGRAM_ID.to_owned())?;
             user.create_subkey("Software\\RegisteredApplications")?
                 .0
-                .set_value("Overbrowsered", &format!("{REMEMBERED_BROWSER_KEY}\\Capabilities"))?;
+                .set_value(
+                    "Overbrowsered",
+                    &format!("{REMEMBERED_BROWSER_KEY}\\Capabilities"),
+                )?;
             Ok(())
         };
         let _ = register();

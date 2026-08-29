@@ -1,4 +1,7 @@
-use crate::{AUTHOR_LINE, NO_BROWSER_SEEN_YET};
+use crate::{
+    APP_DESCRIPTION, AUTHOR_LINE, NO_BROWSER_ADVICE, SET_DEFAULT_PROMPT, default_handler_line,
+    most_recent_browser_line,
+};
 use anyhow::{Context, Result, bail};
 use atspi::events::window::ActivateEvent;
 use atspi::{AccessibilityConnection, Event, WindowEvents};
@@ -27,11 +30,7 @@ pub fn report(error: &anyhow::Error) {
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let appid = load_most_recent_browser_id().context(
-        "Overbrowsered could not find a browser to open this link. \
-         Focus any browser window once so it can learn which one you use, \
-         then try the link again.",
-    )?;
+    let appid = load_most_recent_browser_id().context(NO_BROWSER_ADVICE)?;
     let locales = get_languages_from_env();
     let entry = desktop_entries(&locales)
         .into_iter()
@@ -163,34 +162,29 @@ impl Tray for Overbrowsered {
             }
             .into()
         };
-        let most_recent = match most_recent_browser_id() {
-            None => NO_BROWSER_SEEN_YET.to_owned(),
-            Some(appid) => installed_browsers()
+        let most_recent = most_recent_browser_id().map(|appid| {
+            installed_browsers()
                 .into_iter()
                 .find(|browser| browser.appid == appid)
-                .map_or(appid, |browser| browser.display_name),
-        };
+                .map_or(appid, |browser| browser.display_name)
+        });
         let default_handler = default_browser_desktop_file();
         let we_are_default = default_handler.as_deref() == Some(DESKTOP_FILE);
         let mut items = vec![
             unclickable(AUTHOR_LINE.into()),
             MenuItem::Separator,
-            unclickable(format!("Most recently used browser: {most_recent}")),
-            unclickable(if we_are_default {
-                "Default browser: me 👌".to_owned()
-            } else {
-                format!(
-                    "Default browser: {} ☹️",
-                    default_handler
-                        .as_deref()
-                        .map_or("not me", |file| file.trim_end_matches(".desktop"))
-                )
-            }),
+            unclickable(most_recent_browser_line(most_recent)),
+            unclickable(default_handler_line(
+                we_are_default,
+                default_handler
+                    .as_deref()
+                    .map(|file| file.trim_end_matches(".desktop")),
+            )),
         ];
         if !we_are_default {
             items.push(
                 StandardItem {
-                    label: "⚠️ For Overbrowsered to work, click here to set it as the default \"browser\".".into(),
+                    label: SET_DEFAULT_PROMPT.into(),
                     activate: Box::new(|_| {
                         if let Err(error) = Command::new("xdg-settings")
                             .args(["set", "default-web-browser", DESKTOP_FILE])
@@ -270,7 +264,7 @@ fn register_as_link_handler() -> Result<()> {
     let executable = std::env::current_exe()?;
     let directory = xdg_directory("XDG_DATA_HOME", ".local/share")?.join("applications");
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Overbrowsered\nComment=Opens links in your most recently used browser\nExec={} %u\nIcon=overbrowsered\nTerminal=false\nStartupNotify=false\nCategories=Network;WebBrowser;\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n",
+        "[Desktop Entry]\nType=Application\nName=Overbrowsered\nComment={APP_DESCRIPTION}\nExec={} %u\nIcon=overbrowsered\nTerminal=false\nStartupNotify=false\nCategories=Network;WebBrowser;\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n",
         executable.display()
     );
     let path = directory.join(DESKTOP_FILE);

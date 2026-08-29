@@ -1,4 +1,7 @@
-use crate::{AUTHOR_LINE, NO_BROWSER_SEEN_YET};
+use crate::{
+    APP_DESCRIPTION, AUTHOR_LINE, NO_BROWSER_ADVICE, SET_DEFAULT_PROMPT, default_handler_line,
+    most_recent_browser_line,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use std::cell::RefCell;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
@@ -46,12 +49,9 @@ pub fn open(links: &[String]) -> Result<()> {
     };
     let installed = installed_browsers();
     let Some(browser) = topmost_browser(&installed)? else {
-        let advice = "Overbrowsered could not find a browser to open this link.\n\n\
-             Focus any browser window once so it can learn which one you use, \
-             then try the link again.";
         return Err(match most_recent_failure {
-            Some(cause) => cause.context(advice),
-            None => anyhow!(advice),
+            Some(cause) => cause.context(NO_BROWSER_ADVICE),
+            None => anyhow!(NO_BROWSER_ADVICE),
         });
     };
     launch(links, &browser.program_id)?;
@@ -261,31 +261,30 @@ fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
 
 fn show_menu(window: &w::HWND) -> Result<()> {
     let (browser_line, default_line, we_are_default) = OVERBROWSERED.with(|overbrowsered| {
-        let most_recent = match overbrowsered.most_recent_browser_id.borrow().as_deref() {
-            None => NO_BROWSER_SEEN_YET.to_owned(),
-            Some(id) => overbrowsered
-                .installed
-                .iter()
-                .find(|browser| browser.program_id == id)
-                .map_or_else(|| id.to_owned(), |browser| browser.display_name.clone()),
-        };
-        let browser_line = format!("Most recently used browser: {most_recent}");
+        let most_recent = overbrowsered
+            .most_recent_browser_id
+            .borrow()
+            .as_deref()
+            .map(|id| {
+                overbrowsered
+                    .installed
+                    .iter()
+                    .find(|browser| browser.program_id == id)
+                    .map_or_else(|| id.to_owned(), |browser| browser.display_name.clone())
+            });
+        let browser_line = most_recent_browser_line(most_recent);
         let default_handler = default_http_handler();
         let we_are_default = default_handler.as_deref() == Some(OUR_PROGRAM_ID);
-        let default_line = if we_are_default {
-            "Default http handler: me 👌".to_owned()
-        } else {
-            let handler_name = default_handler
-                .as_ref()
-                .and_then(|id| {
-                    overbrowsered
-                        .installed
-                        .iter()
-                        .find(|browser| &browser.program_id == id)
-                })
-                .map_or("not me", |browser| &browser.display_name);
-            format!("Default http handler: {handler_name} ☹️")
-        };
+        let handler_name = default_handler.as_ref().and_then(|id| {
+            overbrowsered
+                .installed
+                .iter()
+                .find(|browser| &browser.program_id == id)
+        });
+        let default_line = default_handler_line(
+            we_are_default,
+            handler_name.map(|browser| browser.display_name.as_str()),
+        );
         (browser_line, default_line, we_are_default)
     });
     let mut menu = w::HMENU::CreatePopupMenu()?;
@@ -310,9 +309,7 @@ fn show_menu(window: &w::HWND) -> Result<()> {
         menu.AppendMenu(
             co::MF::STRING,
             w::IdMenu::Id(SET_DEFAULT_MENU_ITEM),
-            w::BmpPtrStr::from_str(
-                "⚠️ For Overbrowsered to work, click here to set it as the default \"browser\".",
-            ),
+            w::BmpPtrStr::from_str(SET_DEFAULT_PROMPT),
         )?;
     }
     menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
@@ -473,7 +470,7 @@ fn register_as_link_handler() -> Result<()> {
         (
             CAPABILITIES_KEY.to_owned(),
             Some("ApplicationDescription"),
-            "Opens links in your most recently used browser",
+            APP_DESCRIPTION,
         ),
         (
             CAPABILITIES_KEY.to_owned(),

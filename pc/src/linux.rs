@@ -8,6 +8,7 @@ use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Tray, TrayMethods};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::RwLock;
 use zbus::fdo::DBusProxy;
 use zbus::names::BusName;
 
@@ -56,27 +57,30 @@ pub fn open(links: &[String]) -> Result<()> {
 pub fn run() -> Result<()> {
     futures_lite::future::block_on(async {
         register_as_link_handler().context("registering as a browser")?;
-        let installed = installed_browsers();
-        let most_recent_appid = load_most_recent_browser();
-        let tray = Overbrowsered {
-            most_recent_browser_name: most_recent_appid
-                .as_ref()
-                .and_then(|appid| installed.iter().find(|browser| &browser.appid == appid))
-                .map(|browser| browser.display_name.clone()),
-        }
-        .assume_sni_available(true)
-        .spawn()
-        .await
-        .context("connecting to the session bus")?;
-        watch_focused_windows_for_browsers(&installed, &tray, most_recent_appid).await
+        Overbrowsered
+            .assume_sni_available(true)
+            .spawn()
+            .await
+            .context("connecting to the session bus")?;
+        watch_focused_windows_for_browsers().await
     })
 }
 
-async fn watch_focused_windows_for_browsers(
-    installed: &[Browser],
-    tray: &ksni::Handle<Overbrowsered>,
-    mut most_recent_appid: Option<String>,
-) -> Result<()> {
+fn show_in_tray(browser_name: String) {
+    *MOST_RECENT_BROWSER_NAME
+        .write()
+        .expect("no lock holder panics") = Some(browser_name);
+}
+
+async fn watch_focused_windows_for_browsers() -> Result<()> {
+    let installed = installed_browsers();
+    let mut most_recent_appid = load_most_recent_browser();
+    if let Some(browser) = most_recent_appid
+        .as_ref()
+        .and_then(|appid| installed.iter().find(|browser| &browser.appid == appid))
+    {
+        show_in_tray(browser.display_name.clone());
+    }
     let accessibility = AccessibilityConnection::new()
         .await
         .context("connecting to the accessibility bus")?;
@@ -114,8 +118,7 @@ async fn watch_focused_windows_for_browsers(
             );
         }
         most_recent_appid = Some(browser.appid.clone());
-        tray.update(|tray| tray.most_recent_browser_name = Some(browser.display_name.clone()))
-            .await;
+        show_in_tray(browser.display_name.clone());
     }
     bail!("the accessibility event stream ended")
 }
@@ -132,9 +135,9 @@ struct Browser {
     recognized_by: RecognizedBy,
 }
 
-struct Overbrowsered {
-    most_recent_browser_name: Option<String>,
-}
+static MOST_RECENT_BROWSER_NAME: RwLock<Option<String>> = RwLock::new(None);
+
+struct Overbrowsered;
 
 impl Tray for Overbrowsered {
     fn id(&self) -> String {
@@ -165,7 +168,9 @@ impl Tray for Overbrowsered {
             MenuItem::Separator,
             unclickable(format!(
                 "Most recently used browser: {}",
-                self.most_recent_browser_name
+                MOST_RECENT_BROWSER_NAME
+                    .read()
+                    .expect("no lock holder panics")
                     .as_deref()
                     .unwrap_or(NO_BROWSER_SEEN_YET)
             )),

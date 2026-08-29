@@ -1,0 +1,186 @@
+name: Publish Windows preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Four-part Windows package version
+        required: true
+        default: 0.1.0.0
+        type: string
+      release_tag:
+        description: GitHub prerelease tag
+        required: true
+        default: windows-v0.1.0-preview
+        type: string
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/windows-preview-release.yml
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGE_VERSION: ${{ inputs.package_version || '0.1.0.0' }}
+  RELEASE_TAG: ${{ inputs.release_tag || 'windows-v0.1.0-preview' }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.architecture }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            rust_target: x86_64-pc-windows-msvc
+          - architecture: arm64
+            rust_target: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install Rust target
+        shell: pwsh
+        run: rustup target add ${{ matrix.rust_target }}
+
+      - name: Validate version
+        shell: pwsh
+        run: |
+          if ($env:PACKAGE_VERSION -notmatch '^\\d+\\.\\d+\\.\\d+\\.\\d+$') {
+            throw "MSIX version must have four numeric components: $env:PACKAGE_VERSION"
+          }
+
+      - name: Build MSIX
+        shell: pwsh
+        run: |
+          ./pc/package/windows/build-msix.ps1 `
+            -Version $env:PACKAGE_VERSION `
+            -Architecture '${{ matrix.architecture }}' `
+            -IdentityName 'BrianMisiak.Overbrowsered' `
+            -Publisher 'CN=760D6692-461D-4E61-9DFA-33EF60598E9B' `
+            -PublisherDisplayName 'Brian Misiak'
+
+      - name: Stage portable executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path portable -Force | Out-Null
+          Copy-Item `
+            "pc/target/${{ matrix.rust_target }}/release/overbrowsered.exe" `
+            "portable/Overbrowsered-$env:PACKAGE_VERSION-${{ matrix.architecture }}.exe"
+
+      - name: Upload architecture package
+        uses: actions/upload-artifact@v7
+        with:
+          name: overbrowsered-msix-${{ matrix.architecture }}
+          path: pc/target/msix/Overbrowsered-${{ env.PACKAGE_VERSION }}-${{ matrix.architecture }}.msix
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: overbrowsered-exe-${{ matrix.architecture }}
+          path: portable/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle:
+    name: Build MSIX bundle
+    needs: build
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out packaging scripts
+        uses: actions/checkout@v5
+
+      - name: Download architecture packages
+        uses: actions/download-artifact@v7
+        with:
+          pattern: overbrowsered-msix-*
+          path: packages
+          merge-multiple: true
+
+      - name: Bundle packages
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path bundle -Force | Out-Null
+          ./pc/package/windows/build-msixbundle.ps1 `
+            -Version $env:PACKAGE_VERSION `
+            -PackageDirectory packages `
+            -OutputPath "bundle/Overbrowsered-$env:PACKAGE_VERSION.msixbundle"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: overbrowsered-msixbundle
+          path: bundle/*.msixbundle
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub prerelease
+    needs: [build, bundle]
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Download portable executables
+        uses: actions/download-artifact@v7
+        with:
+          pattern: overbrowsered-exe-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download MSIX bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: overbrowsered-msixbundle
+          path: release-assets
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          @"
+          This is the first public Windows preview of Overbrowsered.
+
+          **These Windows files are currently unsigned.** Windows SmartScreen may warn before running the portable executables. The MSIX bundle uses the Microsoft Store package identity and is not intended for ordinary sideload installation until a separately signed direct-distribution bundle is available.
+
+          - Choose **x64** for ordinary Intel/AMD Windows PCs.
+          - Choose **ARM64** for Windows on Arm.
+          - Move the portable executable to a stable folder before first launch. Overbrowsered registers its current executable path with Windows.
+          - The Microsoft Store submission is undergoing certification.
+          - Direct-download signing is pending approval from the SignPath Foundation.
+
+          Overbrowsered runs locally, has no accounts or telemetry, and does not silently change the user's default browser. It registers itself as an available link handler, then the user chooses it through Windows Default Apps.
+
+          [Code signing policy](https://github.com/bmisiak/overbrowsered/blob/master/CODE_SIGNING.md)
+
+          Free code signing provided by SignPath.io, certificate by SignPath Foundation.
+
+          Built from commit ${{ github.sha }} by GitHub Actions on GitHub-hosted Windows runners.
+          "@ | Set-Content -Path release-notes.md
+
+      - name: Create or update prerelease
+        shell: pwsh
+        run: |
+          $assets = Get-ChildItem release-assets -File | ForEach-Object FullName
+          if (gh release view $env:RELEASE_TAG --repo '${{ github.repository }}' 2>$null) {
+            gh release upload $env:RELEASE_TAG $assets --clobber --repo '${{ github.repository }}'
+            gh release edit $env:RELEASE_TAG `
+              --title 'Overbrowsered for Windows 0.1.0 preview' `
+              --notes-file release-notes.md `
+              --prerelease `
+              --repo '${{ github.repository }}'
+          } else {
+            gh release create $env:RELEASE_TAG $assets `
+              --target '${{ github.sha }}' `
+              --title 'Overbrowsered for Windows 0.1.0 preview' `
+              --notes-file release-notes.md `
+              --prerelease `
+              --repo '${{ github.repository }}'
+          }

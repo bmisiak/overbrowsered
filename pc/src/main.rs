@@ -10,7 +10,7 @@ mod windows;
 #[cfg(target_os = "windows")]
 use windows as platform;
 
-const AUTHOR_LINE: &str = "Overbrowsered by @bmisiak";
+const AUTHOR_LINE: &str = "Overbrowsered by @ibmisiak";
 const NO_BROWSER_SEEN_YET: &str = "none detected yet";
 
 fn main() {

@@ -1,5 +1,5 @@
 use crate::{AUTHOR_LINE, NO_BROWSER_SEEN_YET};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::cell::RefCell;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
@@ -37,17 +37,23 @@ pub fn report(error: &anyhow::Error) {
 pub fn open(links: &[String]) -> Result<()> {
     let _com_alive_while_launching =
         w::CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE)?;
-    if let Some(program_id) = load_most_recent_browser() {
-        if launch(links, &program_id).is_ok() {
-            return Ok(());
-        }
-    }
+    let most_recent_failure = match load_most_recent_browser() {
+        Some(program_id) => match launch(links, &program_id) {
+            Ok(()) => return Ok(()),
+            Err(error) => Some(error),
+        },
+        None => None,
+    };
     let installed = installed_browsers();
-    let browser = topmost_browser(&installed)?.context(
-        "Overbrowsered could not find a browser to open this link.\n\n\
-         Focus any browser window once so it can learn which one you use, \
-         then try the link again.",
-    )?;
+    let Some(browser) = topmost_browser(&installed)? else {
+        let advice = "Overbrowsered could not find a browser to open this link.\n\n\
+             Focus any browser window once so it can learn which one you use, \
+             then try the link again.";
+        return Err(match most_recent_failure {
+            Some(cause) => cause.context(advice),
+            None => anyhow!(advice),
+        });
+    };
     launch(links, &browser.program_id)?;
     save_most_recent_browser(&browser.program_id)?;
     Ok(())
@@ -204,10 +210,10 @@ extern "system" fn window_proc(
 ) -> isize {
     if message == WM_TRAY_ICON {
         let click = unsafe { co::WM::from_raw(lparam as u32) };
-        if click == co::WM::LBUTTONUP || click == co::WM::RBUTTONUP {
-            if let Err(error) = show_menu(&window) {
-                report(&error);
-            }
+        if (click == co::WM::LBUTTONUP || click == co::WM::RBUTTONUP)
+            && let Err(error) = show_menu(&window)
+        {
+            report(&error);
         }
         return 0;
     }

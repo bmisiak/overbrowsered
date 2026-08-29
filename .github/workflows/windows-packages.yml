@@ -1,0 +1,144 @@
+name: Windows packages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/windows-packages.yml
+      - pc/**
+  pull_request:
+    paths:
+      - .github/workflows/windows-packages.yml
+      - pc/**
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: Optional four-part MSIX version override
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.architecture }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            rust_target: x86_64-pc-windows-msvc
+          - architecture: arm64
+            rust_target: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Install Rust target
+        shell: pwsh
+        run: rustup target add ${{ matrix.rust_target }}
+
+      - name: Resolve package metadata
+        id: metadata
+        shell: pwsh
+        env:
+          VERSION_OVERRIDE: ${{ inputs.package_version }}
+          PACKAGE_IDENTITY: ${{ vars.WINDOWS_PACKAGE_IDENTITY }}
+          PACKAGE_PUBLISHER: ${{ vars.WINDOWS_PACKAGE_PUBLISHER }}
+          PUBLISHER_DISPLAY_NAME: ${{ vars.WINDOWS_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          $cargoVersion = (cargo metadata --no-deps --format-version 1 --manifest-path pc/Cargo.toml | ConvertFrom-Json).packages[0].version
+          $version = if ($env:VERSION_OVERRIDE) { $env:VERSION_OVERRIDE } else { "$cargoVersion.0" }
+          if ($version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+            throw "MSIX version must have four numeric components: $version"
+          }
+
+          $identity = if ($env:PACKAGE_IDENTITY) { $env:PACKAGE_IDENTITY } else { 'bmisiak.Overbrowsered' }
+          $publisher = if ($env:PACKAGE_PUBLISHER) { $env:PACKAGE_PUBLISHER } else { 'CN=Overbrowsered Development' }
+          $publisherName = if ($env:PUBLISHER_DISPLAY_NAME) { $env:PUBLISHER_DISPLAY_NAME } else { 'Overbrowsered Development' }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "identity=$identity" >> $env:GITHUB_OUTPUT
+          "publisher=$publisher" >> $env:GITHUB_OUTPUT
+          "publisher_name=$publisherName" >> $env:GITHUB_OUTPUT
+
+      - name: Build MSIX
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+          PACKAGE_ARCHITECTURE: ${{ matrix.architecture }}
+          PACKAGE_IDENTITY: ${{ steps.metadata.outputs.identity }}
+          PACKAGE_PUBLISHER: ${{ steps.metadata.outputs.publisher }}
+          PUBLISHER_DISPLAY_NAME: ${{ steps.metadata.outputs.publisher_name }}
+        run: |
+          ./pc/package/windows/build-msix.ps1 `
+            -Version $env:PACKAGE_VERSION `
+            -Architecture $env:PACKAGE_ARCHITECTURE `
+            -IdentityName $env:PACKAGE_IDENTITY `
+            -Publisher $env:PACKAGE_PUBLISHER `
+            -PublisherDisplayName $env:PUBLISHER_DISPLAY_NAME
+
+      - name: Upload architecture package
+        uses: actions/upload-artifact@v4
+        with:
+          name: overbrowsered-msix-${{ matrix.architecture }}
+          path: pc/target/msix/Overbrowsered-${{ steps.metadata.outputs.version }}-${{ matrix.architecture }}.msix
+          if-no-files-found: error
+          retention-days: 14
+
+  bundle:
+    name: Build MSIX bundle
+    needs: build
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out packaging scripts
+        uses: actions/checkout@v5
+
+      - name: Download architecture packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: overbrowsered-msix-*
+          path: packages
+          merge-multiple: true
+
+      - name: Resolve package version
+        id: metadata
+        shell: pwsh
+        env:
+          VERSION_OVERRIDE: ${{ inputs.package_version }}
+        run: |
+          $package = Get-ChildItem packages/Overbrowsered-*-x64.msix | Select-Object -First 1
+          if (-not $package) {
+            throw 'The x64 package was not downloaded.'
+          }
+          $version = if ($env:VERSION_OVERRIDE) {
+            $env:VERSION_OVERRIDE
+          } elseif ($package.BaseName -match '^Overbrowsered-(.+)-x64$') {
+            $Matches[1]
+          } else {
+            throw "Cannot determine package version from $($package.Name)"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Bundle packages
+        shell: pwsh
+        run: |
+          ./pc/package/windows/build-msixbundle.ps1 `
+            -Version '${{ steps.metadata.outputs.version }}' `
+            -PackageDirectory packages `
+            -OutputPath "bundle/Overbrowsered-${{ steps.metadata.outputs.version }}.msixbundle"
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: overbrowsered-msixbundle
+          path: bundle/Overbrowsered-${{ steps.metadata.outputs.version }}.msixbundle
+          if-no-files-found: error
+          retention-days: 14

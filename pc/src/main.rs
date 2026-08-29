@@ -113,7 +113,7 @@ mod linux {
     }
 
     async fn serve() {
-        register_as_link_handler();
+        let _ = register_as_link_handler();
         let installed = installed_browsers();
         let tray = Overbrowsered {
             browser: remembered_browser()
@@ -168,7 +168,7 @@ mod linux {
                 })
                 .await;
             if newly_activated == Some(true) {
-                remember(&browser.appid);
+                let _ = remember(&browser.appid);
             }
         }
         Some(())
@@ -227,10 +227,10 @@ mod linux {
             .collect()
     }
 
-    fn register_as_link_handler() {
+    fn register_as_link_handler() -> std::io::Result<()> {
         let (Ok(executable), Some(home)) = (std::env::current_exe(), std::env::var("HOME").ok())
         else {
-            return;
+            return Ok(());
         };
         let directory = PathBuf::from(
             std::env::var("XDG_DATA_HOME").unwrap_or_else(|_| format!("{home}/.local/share")),
@@ -241,13 +241,15 @@ mod linux {
             executable.display()
         );
         let path = directory.join(DESKTOP_FILE);
-        if std::fs::read_to_string(&path).ok().as_deref() != Some(entry.as_str()) {
-            let _ = std::fs::create_dir_all(&directory);
-            let _ = std::fs::write(path, entry);
-            let _ = std::process::Command::new("update-desktop-database")
-                .arg(&directory)
-                .spawn();
+        if std::fs::read_to_string(&path).ok().as_deref() == Some(entry.as_str()) {
+            return Ok(());
         }
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(path, entry)?;
+        std::process::Command::new("update-desktop-database")
+            .arg(&directory)
+            .spawn()?;
+        Ok(())
     }
 
     fn config_directory() -> PathBuf {
@@ -262,13 +264,12 @@ mod linux {
         Some(appid.trim().to_owned())
     }
 
-    fn remember(appid: &str) {
+    fn remember(appid: &str) -> std::io::Result<()> {
         let directory = config_directory();
         let temporary = directory.join("browser.tmp");
-        let _ = std::fs::create_dir_all(&directory);
-        if std::fs::write(&temporary, appid).is_ok() {
-            let _ = std::fs::rename(temporary, directory.join("browser"));
-        }
+        std::fs::create_dir_all(&directory)?;
+        std::fs::write(&temporary, appid)?;
+        std::fs::rename(temporary, directory.join("browser"))
     }
 }
 
@@ -321,30 +322,33 @@ mod windows {
             }
         }
 
-        fn foreground_changed(&self, window: &w::HWND) {
-            let Some(browser) = executable_path_of_window(window).and_then(|executable| {
-                self.installed
-                    .iter()
-                    .find(|browser| browser.executable_path == executable)
-            }) else {
-                return;
-            };
+        fn foreground_changed(&self, window: &w::HWND) -> Option<()> {
+            let executable = executable_path_of_window(window)?;
+            let browser = self
+                .installed
+                .iter()
+                .find(|browser| browser.executable_path == executable)?;
             let mut remembered = self.remembered.borrow_mut();
             if remembered.as_ref().map(|b| &b.program_id) == Some(&browser.program_id) {
-                return;
+                return None;
             }
-            remember(&browser.program_id);
+            remember(&browser.program_id).ok()?;
             *remembered = Some(browser.clone());
+            Some(())
         }
+    }
 
-        fn show_menu(&self, window: &w::HWND) -> w::SysResult<()> {
-            let browser_line = format!(
+    fn show_menu(window: &w::HWND) -> w::SysResult<()> {
+        let browser_line = OVERBROWSERED.with(|overbrowsered| {
+            format!(
                 "Most recently used browser: {}",
-                self.remembered
+                overbrowsered
+                    .remembered
                     .borrow()
                     .as_ref()
                     .map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
-            );
+            )
+        });
             let mut menu = w::HMENU::CreatePopupMenu()?;
             let unclickable = co::MF::STRING | co::MF::DISABLED;
             menu.AppendMenu(unclickable, w::IdMenu::None, w::BmpPtrStr::from_str(AUTHOR_LINE))?;
@@ -365,11 +369,10 @@ mod windows {
                 w::PostQuitMessage(0);
             }
             Ok(())
-        }
     }
 
     pub fn watch_for_browsers_and_serve_menu() {
-        register_as_link_handler();
+        let _ = register_as_link_handler();
         OVERBROWSERED.with(|_| ());
         let window = create_window().expect("the message window can be created");
 
@@ -389,7 +392,6 @@ mod windows {
 
         let mut message = w::MSG::default();
         while w::GetMessage(&mut message, None, 0, 0).unwrap_or(false) {
-            w::TranslateMessage(&message);
             unsafe { w::DispatchMessage(&message) };
         }
         unsafe { Shell_NotifyIconW(NIM_DELETE, &mut icon) };
@@ -458,7 +460,7 @@ mod windows {
         if message.raw() == WM_TRAY_ICON {
             let mouse = unsafe { co::WM::from_raw(lparam as u32) };
             if mouse == co::WM::LBUTTONUP || mouse == co::WM::RBUTTONUP {
-                let _ = OVERBROWSERED.with(|overbrowsered| overbrowsered.show_menu(&window));
+                let _ = show_menu(&window);
             }
             return 0;
         }
@@ -576,20 +578,20 @@ mod windows {
         Ok(())
     }
 
-    fn register_as_link_handler() {
+    fn register_as_link_handler() -> w::SysResult<()> {
         let Ok(executable) = std::env::current_exe() else {
-            return;
+            return Ok(());
         };
         let capabilities = format!("{REMEMBERED_BROWSER_KEY}\\Capabilities");
-        let _ = write_key(
+        write_key(
             &format!("Software\\Classes\\{OUR_PROGRAM_ID}"),
             &[(None, "Overbrowsered URL Handler")],
-        );
-        let _ = write_key(
+        )?;
+        write_key(
             &format!("Software\\Classes\\{OUR_PROGRAM_ID}\\shell\\open\\command"),
             &[(None, &format!("\"{}\" \"%1\"", executable.display()))],
-        );
-        let _ = write_key(
+        )?;
+        write_key(
             &capabilities,
             &[
                 (Some("ApplicationName"), "Overbrowsered"),
@@ -598,22 +600,22 @@ mod windows {
                     "Opens links in your most recently used browser",
                 ),
             ],
-        );
-        let _ = write_key(
+        )?;
+        write_key(
             &format!("{capabilities}\\URLAssociations"),
             &[(Some("http"), OUR_PROGRAM_ID), (Some("https"), OUR_PROGRAM_ID)],
-        );
-        let _ = write_key(
+        )?;
+        write_key(
             "Software\\RegisteredApplications",
             &[(Some("Overbrowsered"), &capabilities)],
-        );
+        )
     }
 
     pub fn remembered_browser() -> Option<String> {
         string_value(&w::HKEY::CURRENT_USER, Some(REMEMBERED_BROWSER_KEY), None)
     }
 
-    fn remember(program_id: &str) {
-        let _ = write_key(REMEMBERED_BROWSER_KEY, &[(None, program_id)]);
+    fn remember(program_id: &str) -> w::SysResult<()> {
+        write_key(REMEMBERED_BROWSER_KEY, &[(None, program_id)])
     }
 }

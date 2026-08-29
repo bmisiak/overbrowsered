@@ -1,0 +1,35 @@
+[package]
+name = "overbrowsered"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+opt-level = "z"
+panic = "abort"
+
+[dependencies]
+anyhow = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi = { version = "0.30", default-features = false, features = ["connection", "wrappers"] }
+freedesktop-desktop-entry = { version = "0.8", default-features = false }
+futures-lite = { version = "2", default-features = false, features = ["std"] }
+ksni = { version = "0.3", default-features = false, features = ["async-io"] }
+zbus = { version = "5", default-features = false, features = ["async-io"] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+winresource = "0.1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winsafe = { version = "0.0.28", features = ["user", "advapi", "shell"] }
+
+[target.'cfg(target_os = "windows")'.dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]

@@ -85,7 +85,7 @@ jobs:
             -PublisherDisplayName $env:PUBLISHER_DISPLAY_NAME
 
       - name: Upload architecture package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: overbrowsered-msix-${{ matrix.architecture }}
           path: pc/target/msix/Overbrowsered-${{ steps.metadata.outputs.version }}-${{ matrix.architecture }}.msix
@@ -102,7 +102,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Download architecture packages
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         with:
           pattern: overbrowsered-msix-*
           path: packages
@@ -136,7 +136,7 @@ jobs:
             -OutputPath "bundle/Overbrowsered-${{ steps.metadata.outputs.version }}.msixbundle"
 
       - name: Upload bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: overbrowsered-msixbundle
           path: bundle/Overbrowsered-${{ steps.metadata.outputs.version }}.msixbundle

@@ -1,0 +1,33 @@
+[package]
+name = "overbrowsered"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "overbrowsered"
+path = "src/main.rs"
+
+[dependencies]
+confy = "2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+tray-icon = "0.24"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi = "0.30"
+freedesktop-desktop-entry = "0.8"
+futures-lite = "2"
+gtk = "0.18"
+zbus = "5"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.56"
+
+[target.'cfg(target_os = "windows")'.dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+]

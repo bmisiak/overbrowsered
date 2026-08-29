@@ -50,7 +50,7 @@ jobs:
       - name: Validate version
         shell: pwsh
         run: |
-          if ($env:PACKAGE_VERSION -notmatch '^\\d+\\.\\d+\\.\\d+\\.\\d+$') {
+          if ($env:PACKAGE_VERSION -notmatch '^\d+\.\d+\.\d+\.\d+$') {
             throw "MSIX version must have four numeric components: $env:PACKAGE_VERSION"
           }
 

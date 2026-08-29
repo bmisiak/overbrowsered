@@ -19,7 +19,8 @@ pub fn report(error: &anyhow::Error) {
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let appid = remembered_browser().context("Overbrowsered has yet to see you use a browser")?;
+    let appid =
+        most_recent_browser_appid().context("Overbrowsered has yet to see you use a browser")?;
     let locales = get_languages_from_env();
     let entry = desktop_entries(&locales)
         .into_iter()
@@ -41,25 +42,25 @@ pub fn run() -> Result<()> {
     futures_lite::future::block_on(async {
         register_as_link_handler().context("registering as a browser")?;
         let installed = installed_browsers();
+        let most_recent_appid = most_recent_browser_appid();
         let tray = Overbrowsered {
-            browser: remembered_browser().and_then(|appid| {
-                installed
-                    .iter()
-                    .find(|browser| browser.appid == appid)
-                    .cloned()
-            }),
+            most_recent_browser_name: most_recent_appid
+                .as_ref()
+                .and_then(|appid| installed.iter().find(|browser| &browser.appid == appid))
+                .map(|browser| browser.display_name.clone()),
         }
         .assume_sni_available(true)
         .spawn()
         .await
         .context("connecting to the session bus")?;
-        watch_for_activations(&installed, &tray).await
+        watch_focused_windows_for_browsers(&installed, &tray, most_recent_appid).await
     })
 }
 
-async fn watch_for_activations(
+async fn watch_focused_windows_for_browsers(
     installed: &[Browser],
     tray: &ksni::Handle<Overbrowsered>,
+    mut most_recent_appid: Option<String>,
 ) -> Result<()> {
     let accessibility = AccessibilityConnection::new()
         .await
@@ -72,46 +73,44 @@ async fn watch_for_activations(
         let Ok(Event::Window(WindowEvents::Activate(activation))) = event else {
             continue;
         };
-        let Some(name) = activation.item.name() else {
+        let Some(bus_name) = activation.item.name() else {
             continue;
         };
-        let Ok(process) = bus
-            .get_connection_unix_process_id(BusName::Unique(name.to_owned()))
+        let Ok(pid) = bus
+            .get_connection_unix_process_id(BusName::Unique(bus_name.to_owned()))
             .await
         else {
             continue;
         };
-        let running_as = recognize_process(process);
+        let running_as = recognize_process(pid);
         let Some(browser) = installed
             .iter()
             .find(|b| Some(&b.recognized_by) == running_as.as_ref())
         else {
             continue;
         };
-        let newly_activated = tray
-            .update(|tray| {
-                let newly_activated =
-                    tray.browser.as_ref().map(|b| &b.appid) != Some(&browser.appid);
-                tray.browser = Some(browser.clone());
-                newly_activated
-            })
-            .await;
-        if newly_activated == Some(true) {
-            if let Err(error) = remember(&browser.appid) {
-                eprintln!("cannot remember {}: {error:#}", browser.appid);
-            }
+        if most_recent_appid.as_deref() == Some(browser.appid.as_str()) {
+            continue;
         }
+        if let Err(error) = save_most_recent_browser(&browser.appid) {
+            eprintln!(
+                "cannot save most recent browser {}: {error:#}",
+                browser.appid
+            );
+        }
+        most_recent_appid = Some(browser.appid.clone());
+        tray.update(|tray| tray.most_recent_browser_name = Some(browser.display_name.clone()))
+            .await;
     }
     bail!("the accessibility event stream ended")
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(PartialEq)]
 enum RecognizedBy {
     Executable(String),
     FlatpakApp(String),
 }
 
-#[derive(Clone)]
 struct Browser {
     appid: String,
     display_name: String,
@@ -119,7 +118,7 @@ struct Browser {
 }
 
 struct Overbrowsered {
-    browser: Option<Browser>,
+    most_recent_browser_name: Option<String>,
 }
 
 impl Tray for Overbrowsered {
@@ -149,11 +148,24 @@ impl Tray for Overbrowsered {
             MenuItem::Separator,
             unclickable(format!(
                 "Most recently used browser: {}",
-                self.browser
-                    .as_ref()
-                    .map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
+                self.most_recent_browser_name
+                    .as_deref()
+                    .unwrap_or(NO_BROWSER_SEEN_YET)
             )),
             MenuItem::Separator,
+            StandardItem {
+                label: "Set as default browser".into(),
+                activate: Box::new(|_| {
+                    if let Err(error) = Command::new("xdg-settings")
+                        .args(["set", "default-web-browser", DESKTOP_FILE])
+                        .spawn()
+                    {
+                        eprintln!("cannot run xdg-settings: {error}");
+                    }
+                }),
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "Quit".into(),
                 activate: Box::new(|_| std::process::exit(0)),
@@ -164,20 +176,17 @@ impl Tray for Overbrowsered {
     }
 }
 
-fn file_name(path: &Path) -> Option<&str> {
-    path.file_name()?.to_str()
-}
-
-fn recognize_process(process: u32) -> Option<RecognizedBy> {
-    if let Ok(flatpak_info) = std::fs::read_to_string(format!("/proc/{process}/root/.flatpak-info"))
-    {
+fn recognize_process(pid: u32) -> Option<RecognizedBy> {
+    if let Ok(flatpak_info) = std::fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info")) {
         let app = flatpak_info
             .lines()
             .find_map(|line| line.strip_prefix("name="))?;
         return Some(RecognizedBy::FlatpakApp(app.to_owned()));
     }
-    let path = std::fs::read_link(format!("/proc/{process}/exe")).ok()?;
-    Some(RecognizedBy::Executable(file_name(&path)?.to_owned()))
+    let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    Some(RecognizedBy::Executable(
+        path.file_name()?.to_str()?.to_owned(),
+    ))
 }
 
 fn installed_browsers() -> Vec<Browser> {
@@ -197,7 +206,10 @@ fn installed_browsers() -> Vec<Browser> {
                 recognized_by: match entry.flatpak() {
                     Some(app) => RecognizedBy::FlatpakApp(app.to_owned()),
                     None => RecognizedBy::Executable(
-                        file_name(Path::new(entry.parse_exec().ok()?.first()?))?.to_owned(),
+                        Path::new(entry.parse_exec().ok()?.first()?)
+                            .file_name()?
+                            .to_str()?
+                            .to_owned(),
                     ),
                 },
             })
@@ -218,9 +230,12 @@ fn register_as_link_handler() -> Result<()> {
     }
     std::fs::create_dir_all(&directory)?;
     std::fs::write(path, entry)?;
-    let _ = Command::new("update-desktop-database")
+    if let Err(error) = Command::new("update-desktop-database")
         .arg(&directory)
-        .spawn();
+        .spawn()
+    {
+        eprintln!("cannot run update-desktop-database: {error}");
+    }
     Ok(())
 }
 
@@ -236,12 +251,12 @@ fn config_directory() -> Result<PathBuf> {
     Ok(xdg_directory("XDG_CONFIG_HOME", ".config")?.join("overbrowsered"))
 }
 
-fn remembered_browser() -> Option<String> {
+fn most_recent_browser_appid() -> Option<String> {
     let appid = std::fs::read_to_string(config_directory().ok()?.join("browser")).ok()?;
     Some(appid.trim().to_owned())
 }
 
-fn remember(appid: &str) -> Result<()> {
+fn save_most_recent_browser(appid: &str) -> Result<()> {
     let directory = config_directory()?;
     std::fs::create_dir_all(&directory)?;
     std::fs::write(directory.join("browser"), appid)?;

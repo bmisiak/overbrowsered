@@ -2,6 +2,7 @@ use crate::{AUTHOR_LINE, NO_BROWSER_SEEN_YET};
 use anyhow::{Context, Result, bail};
 use std::cell::RefCell;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
+use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateIconFromResourceEx, EVENT_SYSTEM_FOREGROUND, LR_DEFAULTCOLOR, WINEVENT_OUTOFCONTEXT,
     WINEVENT_SKIPOWNPROCESS,
@@ -11,24 +12,32 @@ use winsafe::{self as w, co};
 
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-44.icon");
 const ICON_FORMAT_VERSION: u32 = 0x0003_0000;
-const HWND_MESSAGE: isize = -3;
 const OUR_PROGRAM_ID: &str = "Overbrowsered.Url";
-const REMEMBERED_BROWSER_KEY: &str = "Software\\Overbrowsered";
+const MOST_RECENT_BROWSER_KEY: &str = "Software\\Overbrowsered";
+const CAPABILITIES_KEY: &str = "Software\\Overbrowsered\\Capabilities";
 const WM_TRAY_ICON: co::WM = unsafe { co::WM::from_raw(0x8000 + 1) };
 const QUIT_MENU_ITEM: u16 = 1;
+const SET_DEFAULT_MENU_ITEM: u16 = 2;
 
 thread_local! {
     static OVERBROWSERED: Overbrowsered = Overbrowsered::new();
 }
 
 pub fn report(error: &anyhow::Error) {
-    let _ = w::HWND::NULL.MessageBox(&format!("{error:#}"), "Overbrowsered", co::MB::ICONERROR);
+    let text = format!("{error:#}");
+    if w::HWND::NULL
+        .MessageBox(&text, "Overbrowsered", co::MB::ICONERROR)
+        .is_err()
+    {
+        eprintln!("{text}");
+    }
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let program_id =
-        remembered_browser().context("Overbrowsered has yet to see you use a browser")?;
-    let _com = w::CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE)?;
+    let program_id = most_recent_browser_program_id()
+        .context("Overbrowsered has yet to see you use a browser")?;
+    let _com_alive_while_launching =
+        w::CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE)?;
     for link in links {
         w::ShellExecuteEx(&w::SHELLEXECUTEINFO {
             file: link,
@@ -60,6 +69,7 @@ pub fn run() -> Result<()> {
     if hook.is_null() {
         bail!("cannot watch for foreground window changes");
     }
+    OVERBROWSERED.with(|overbrowsered| overbrowsered.remember_topmost_browser())?;
 
     let mut message = w::MSG::default();
     while w::GetMessage(&mut message, None, 0, 0)? {
@@ -78,15 +88,15 @@ struct Browser {
 
 struct Overbrowsered {
     installed: Vec<Browser>,
-    remembered: RefCell<Option<Browser>>,
+    most_recent: RefCell<Option<Browser>>,
 }
 
 impl Overbrowsered {
     fn new() -> Self {
         let installed = installed_browsers();
         Self {
-            remembered: RefCell::new(
-                remembered_browser()
+            most_recent: RefCell::new(
+                most_recent_browser_program_id()
                     .and_then(|id| installed.iter().find(|b| b.program_id == id))
                     .cloned(),
             ),
@@ -94,19 +104,37 @@ impl Overbrowsered {
         }
     }
 
-    fn foreground_changed(&self, window: &w::HWND) -> Option<()> {
+    fn browser_of_window(&self, window: &w::HWND) -> Option<&Browser> {
         let executable = executable_path_of_window(window)?;
-        let browser = self
-            .installed
+        self.installed
             .iter()
-            .find(|browser| browser.executable_path == executable)?;
-        let mut remembered = self.remembered.borrow_mut();
-        if remembered.as_ref().map(|b| &b.program_id) == Some(&browser.program_id) {
+            .find(|browser| browser.executable_path == executable)
+    }
+
+    fn foreground_changed(&self, window: &w::HWND) -> Option<()> {
+        let browser = self.browser_of_window(window)?;
+        let mut most_recent = self.most_recent.borrow_mut();
+        if most_recent.as_ref().map(|b| &b.program_id) == Some(&browser.program_id) {
             return None;
         }
-        remember(&browser.program_id).ok()?;
-        *remembered = Some(browser.clone());
+        save_most_recent_browser(&browser.program_id).ok()?;
+        *most_recent = Some(browser.clone());
         Some(())
+    }
+
+    fn remember_topmost_browser(&self) -> Result<()> {
+        let mut topmost = None;
+        w::EnumWindows(|window: w::HWND| {
+            if topmost.is_none() && window.IsWindowVisible() {
+                topmost = self.browser_of_window(&window).cloned();
+            }
+            true
+        })?;
+        if let Some(browser) = topmost {
+            save_most_recent_browser(&browser.program_id)?;
+            *self.most_recent.borrow_mut() = Some(browser);
+        }
+        Ok(())
     }
 }
 
@@ -132,7 +160,6 @@ fn create_window() -> Result<w::HWND> {
     class.set_lpszClassName(Some(&mut class_name));
     let atom = unsafe { w::RegisterClassEx(&class)? };
 
-    let message_only_parent = unsafe { w::HWND::from_ptr(HWND_MESSAGE as *mut std::ffi::c_void) };
     Ok(unsafe {
         w::HWND::CreateWindowEx(
             co::WS_EX::NoValue,
@@ -141,7 +168,7 @@ fn create_window() -> Result<w::HWND> {
             co::WS::NoValue,
             w::POINT::default(),
             w::SIZE::default(),
-            Some(&message_only_parent),
+            None,
             w::IdMenu::None,
             &instance,
             None,
@@ -158,12 +185,20 @@ extern "system" fn window_proc(
     if message == WM_TRAY_ICON {
         let click = unsafe { co::WM::from_raw(lparam as u32) };
         if click == co::WM::LBUTTONUP || click == co::WM::RBUTTONUP {
-            let _ = show_menu(&window);
+            if let Err(error) = show_menu(&window) {
+                report(&error);
+            }
         }
         return 0;
     }
     if message == co::WM::DESTROY {
         w::PostQuitMessage(0);
+        return 0;
+    }
+    if w::RegisterWindowMessage("TaskbarCreated") == Ok(message.raw()) {
+        if let Err(error) = restore_tray_icon(&window) {
+            report(&error);
+        }
         return 0;
     }
     unsafe {
@@ -173,6 +208,10 @@ extern "system" fn window_proc(
             lparam,
         })
     }
+}
+
+fn restore_tray_icon(window: &w::HWND) -> Result<()> {
+    w::Shell_NotifyIcon(co::NIM::ADD, &tray_icon(window)?).context("re-adding the tray icon")
 }
 
 fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
@@ -200,12 +239,12 @@ fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
     Ok(data)
 }
 
-fn show_menu(window: &w::HWND) -> w::SysResult<()> {
+fn show_menu(window: &w::HWND) -> Result<()> {
     let browser_line = OVERBROWSERED.with(|overbrowsered| {
         format!(
             "Most recently used browser: {}",
             overbrowsered
-                .remembered
+                .most_recent
                 .borrow()
                 .as_ref()
                 .map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
@@ -227,6 +266,11 @@ fn show_menu(window: &w::HWND) -> w::SysResult<()> {
     menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
     menu.AppendMenu(
         co::MF::STRING,
+        w::IdMenu::Id(SET_DEFAULT_MENU_ITEM),
+        w::BmpPtrStr::from_str("Set as default browser…"),
+    )?;
+    menu.AppendMenu(
+        co::MF::STRING,
         w::IdMenu::Id(QUIT_MENU_ITEM),
         w::BmpPtrStr::from_str("Quit"),
     )?;
@@ -238,6 +282,27 @@ fn show_menu(window: &w::HWND) -> w::SysResult<()> {
     if chosen == Some(QUIT_MENU_ITEM as i32) {
         w::PostQuitMessage(0);
     }
+    if chosen == Some(SET_DEFAULT_MENU_ITEM as i32) {
+        open_default_apps_settings()?;
+    }
+    Ok(())
+}
+
+fn open_default_apps_settings() -> Result<()> {
+    unsafe {
+        SHChangeNotify(
+            SHCNE_ASSOCCHANGED as i32,
+            SHCNF_IDLIST,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    w::ShellExecuteEx(&w::SHELLEXECUTEINFO {
+        file: "ms-settings:defaultapps?registeredAppUser=Overbrowsered",
+        show: co::SW::SHOWNORMAL,
+        ..Default::default()
+    })
+    .context("opening the default apps settings")?;
     Ok(())
 }
 
@@ -272,17 +337,21 @@ fn installed_browsers() -> Vec<Browser> {
             continue;
         };
         browsers.extend(names.flatten().filter_map(|(name, _)| {
-            let capabilities = string_value(&registered, None, Some(&name))?;
+            let browser_capabilities_key = string_value(&registered, None, Some(&name))?;
             let program_id = string_value(
                 root,
-                Some(&format!("{capabilities}\\URLAssociations")),
+                Some(&format!("{browser_capabilities_key}\\URLAssociations")),
                 Some("http"),
             )
             .filter(|id| *id != OUR_PROGRAM_ID)?;
             Some(Browser {
-                display_name: string_value(root, Some(&capabilities), Some("ApplicationName"))
-                    .filter(|name| !name.starts_with('@'))
-                    .unwrap_or(name),
+                display_name: string_value(
+                    root,
+                    Some(&browser_capabilities_key),
+                    Some("ApplicationName"),
+                )
+                .filter(|name| !name.starts_with('@'))
+                .unwrap_or(name),
                 executable_path: command_executable(&program_id)?.to_lowercase(),
                 program_id,
             })
@@ -317,7 +386,6 @@ fn write_key(sub_key: &str, name: Option<&str>, value: &str) -> w::SysResult<()>
 
 fn register_as_link_handler() -> Result<()> {
     let command = format!("\"{}\" \"%1\"", std::env::current_exe()?.display());
-    let capabilities = format!("{REMEMBERED_BROWSER_KEY}\\Capabilities");
     for (sub_key, name, value) in [
         (
             format!("Software\\Classes\\{OUR_PROGRAM_ID}"),
@@ -330,29 +398,29 @@ fn register_as_link_handler() -> Result<()> {
             command.as_str(),
         ),
         (
-            capabilities.clone(),
+            CAPABILITIES_KEY.to_owned(),
             Some("ApplicationName"),
             "Overbrowsered",
         ),
         (
-            capabilities.clone(),
+            CAPABILITIES_KEY.to_owned(),
             Some("ApplicationDescription"),
             "Opens links in your most recently used browser",
         ),
         (
-            format!("{capabilities}\\URLAssociations"),
+            format!("{CAPABILITIES_KEY}\\URLAssociations"),
             Some("http"),
             OUR_PROGRAM_ID,
         ),
         (
-            format!("{capabilities}\\URLAssociations"),
+            format!("{CAPABILITIES_KEY}\\URLAssociations"),
             Some("https"),
             OUR_PROGRAM_ID,
         ),
         (
             "Software\\RegisteredApplications".to_owned(),
             Some("Overbrowsered"),
-            &capabilities,
+            CAPABILITIES_KEY,
         ),
     ] {
         write_key(&sub_key, name, value)?;
@@ -360,10 +428,10 @@ fn register_as_link_handler() -> Result<()> {
     Ok(())
 }
 
-fn remembered_browser() -> Option<String> {
-    string_value(&w::HKEY::CURRENT_USER, Some(REMEMBERED_BROWSER_KEY), None)
+fn most_recent_browser_program_id() -> Option<String> {
+    string_value(&w::HKEY::CURRENT_USER, Some(MOST_RECENT_BROWSER_KEY), None)
 }
 
-fn remember(program_id: &str) -> w::SysResult<()> {
-    write_key(REMEMBERED_BROWSER_KEY, None, program_id)
+fn save_most_recent_browser(program_id: &str) -> w::SysResult<()> {
+    write_key(MOST_RECENT_BROWSER_KEY, None, program_id)
 }

@@ -34,8 +34,8 @@ pub fn report(error: &anyhow::Error) {
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let program_id = most_recent_browser_program_id()
-        .context("Overbrowsered has yet to see you use a browser")?;
+    let program_id =
+        load_most_recent_browser().context("Overbrowsered has yet to see you use a browser")?;
     let _com_alive_while_launching =
         w::CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE)?;
     for link in links {
@@ -96,7 +96,7 @@ impl Overbrowsered {
         let installed = installed_browsers();
         Self {
             most_recent: RefCell::new(
-                most_recent_browser_program_id()
+                load_most_recent_browser()
                     .and_then(|id| installed.iter().find(|b| b.program_id == id))
                     .cloned(),
             ),
@@ -385,7 +385,9 @@ fn write_key(sub_key: &str, name: Option<&str>, value: &str) -> w::SysResult<()>
 }
 
 fn register_as_link_handler() -> Result<()> {
-    let command = format!("\"{}\" \"%1\"", std::env::current_exe()?.display());
+    let executable = std::env::current_exe()?;
+    let command = format!("\"{}\" \"%1\"", executable.display());
+    let default_icon = format!("\"{}\",0", executable.display());
     for (sub_key, name, value) in [
         (
             format!("Software\\Classes\\{OUR_PROGRAM_ID}"),
@@ -396,6 +398,11 @@ fn register_as_link_handler() -> Result<()> {
             format!("Software\\Classes\\{OUR_PROGRAM_ID}\\shell\\open\\command"),
             None,
             command.as_str(),
+        ),
+        (
+            format!("Software\\Classes\\{OUR_PROGRAM_ID}\\DefaultIcon"),
+            None,
+            default_icon.as_str(),
         ),
         (
             CAPABILITIES_KEY.to_owned(),
@@ -428,7 +435,7 @@ fn register_as_link_handler() -> Result<()> {
     Ok(())
 }
 
-fn most_recent_browser_program_id() -> Option<String> {
+fn load_most_recent_browser() -> Option<String> {
     string_value(&w::HKEY::CURRENT_USER, Some(MOST_RECENT_BROWSER_KEY), None)
 }
 

@@ -20,7 +20,7 @@ pub fn report(error: &anyhow::Error) {
 
 pub fn open(links: &[String]) -> Result<()> {
     let appid =
-        most_recent_browser_appid().context("Overbrowsered has yet to see you use a browser")?;
+        load_most_recent_browser().context("Overbrowsered has yet to see you use a browser")?;
     let locales = get_languages_from_env();
     let entry = desktop_entries(&locales)
         .into_iter()
@@ -42,7 +42,7 @@ pub fn run() -> Result<()> {
     futures_lite::future::block_on(async {
         register_as_link_handler().context("registering as a browser")?;
         let installed = installed_browsers();
-        let most_recent_appid = most_recent_browser_appid();
+        let most_recent_appid = load_most_recent_browser();
         let tray = Overbrowsered {
             most_recent_browser_name: most_recent_appid
                 .as_ref()
@@ -251,7 +251,7 @@ fn config_directory() -> Result<PathBuf> {
     Ok(xdg_directory("XDG_CONFIG_HOME", ".config")?.join("overbrowsered"))
 }
 
-fn most_recent_browser_appid() -> Option<String> {
+fn load_most_recent_browser() -> Option<String> {
     let appid = std::fs::read_to_string(config_directory().ok()?.join("browser")).ok()?;
     Some(appid.trim().to_owned())
 }

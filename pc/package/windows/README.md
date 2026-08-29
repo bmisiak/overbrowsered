@@ -33,17 +33,24 @@ The script builds with Cargo, assembles the package layout, validates it with
 MakeAppx, and writes `target\msix\Overbrowsered-<version>-<arch>.msix`.
 
 GitHub Actions builds both architectures and combines them into one
-`Overbrowsered-<version>.msixbundle`. For Microsoft Store packages, configure
-these non-secret repository variables using the values assigned by Partner
-Center:
+`Overbrowsered-<version>.msixbundle`. The workflow defaults to the Store
+identity assigned to Overbrowsered:
+
+- `Package/Identity/Name`: `BrianMisiak.Overbrowsered`
+- `Package/Identity/Publisher`: `CN=760D6692-461D-4E61-9DFA-33EF60598E9B`
+- `Package/Properties/PublisherDisplayName`: `Brian Misiak`
+
+The following non-secret repository variables can override that identity when
+building a separate direct-distribution package:
 
 - `WINDOWS_PACKAGE_IDENTITY`
 - `WINDOWS_PACKAGE_PUBLISHER`
 - `WINDOWS_PUBLISHER_DISPLAY_NAME`
 
-If the variables are absent, CI uses an explicitly development-only identity.
-Those artifacts validate packaging but cannot be submitted to the Store or
-installed without development signing.
+If the variables are absent, CI produces an unsigned Store-ready artifact.
+Partner Center signs accepted Store packages. Direct GitHub distribution must
+use a separately configured publisher identity and a publicly trusted signing
+certificate; an unsigned package will not install for ordinary users.
 
 To create the bundle locally after building both architecture packages:
 
@@ -77,3 +84,4 @@ Unvirtualized registry values persist after package removal. A future release
 should add an explicit package-removal cleanup path if Windows exposes a reliable
 hook suitable for Store applications. Do not add a manifest `windows.protocol`
 fallback for `http` or `https`; Windows silently ignores those reserved schemes.
+

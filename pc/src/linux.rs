@@ -27,7 +27,7 @@ pub fn report(error: &anyhow::Error) {
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let appid = load_most_recent_browser().context(
+    let appid = load_most_recent_browser_id().context(
         "Overbrowsered could not find a browser to open this link. \
          Focus any browser window once so it can learn which one you use, \
          then try the link again.",
@@ -66,20 +66,23 @@ pub fn run() -> Result<()> {
     })
 }
 
-fn show_in_tray(browser_name: String) {
-    *MOST_RECENT_BROWSER_NAME
+fn most_recent_browser_id() -> Option<String> {
+    MOST_RECENT_BROWSER_ID
+        .read()
+        .expect("no lock holder panics")
+        .clone()
+}
+
+fn set_most_recent_browser_id(appid: String) {
+    *MOST_RECENT_BROWSER_ID
         .write()
-        .expect("no lock holder panics") = Some(browser_name);
+        .expect("no lock holder panics") = Some(appid);
 }
 
 async fn watch_focused_windows_for_browsers() -> Result<()> {
     let installed = installed_browsers();
-    let mut most_recent_appid = load_most_recent_browser();
-    if let Some(browser) = most_recent_appid
-        .as_ref()
-        .and_then(|appid| installed.iter().find(|browser| &browser.appid == appid))
-    {
-        show_in_tray(browser.display_name.clone());
+    if let Some(appid) = load_most_recent_browser_id() {
+        set_most_recent_browser_id(appid);
     }
     let accessibility = AccessibilityConnection::new()
         .await
@@ -108,17 +111,16 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
         else {
             continue;
         };
-        if most_recent_appid.as_deref() == Some(browser.appid.as_str()) {
+        if most_recent_browser_id().as_deref() == Some(browser.appid.as_str()) {
             continue;
         }
-        if let Err(error) = save_most_recent_browser(&browser.appid) {
+        if let Err(error) = save_most_recent_browser_id(&browser.appid) {
             eprintln!(
                 "cannot save most recent browser {}: {error:#}",
                 browser.appid
             );
         }
-        most_recent_appid = Some(browser.appid.clone());
-        show_in_tray(browser.display_name.clone());
+        set_most_recent_browser_id(browser.appid.clone());
     }
     bail!("the accessibility event stream ended")
 }
@@ -135,7 +137,7 @@ struct Browser {
     recognized_by: RecognizedBy,
 }
 
-static MOST_RECENT_BROWSER_NAME: RwLock<Option<String>> = RwLock::new(None);
+static MOST_RECENT_BROWSER_ID: RwLock<Option<String>> = RwLock::new(None);
 
 struct Overbrowsered;
 
@@ -161,19 +163,19 @@ impl Tray for Overbrowsered {
             }
             .into()
         };
+        let most_recent = match most_recent_browser_id() {
+            None => NO_BROWSER_SEEN_YET.to_owned(),
+            Some(appid) => installed_browsers()
+                .into_iter()
+                .find(|browser| browser.appid == appid)
+                .map_or(appid, |browser| browser.display_name),
+        };
         let default_handler = default_browser_desktop_file();
         let we_are_default = default_handler.as_deref() == Some(DESKTOP_FILE);
         let mut items = vec![
             unclickable(AUTHOR_LINE.into()),
             MenuItem::Separator,
-            unclickable(format!(
-                "Most recently used browser: {}",
-                MOST_RECENT_BROWSER_NAME
-                    .read()
-                    .expect("no lock holder panics")
-                    .as_deref()
-                    .unwrap_or(NO_BROWSER_SEEN_YET)
-            )),
+            unclickable(format!("Most recently used browser: {most_recent}")),
             unclickable(if we_are_default {
                 "Default browser: me 👌".to_owned()
             } else {
@@ -298,12 +300,12 @@ fn config_directory() -> Result<PathBuf> {
     Ok(xdg_directory("XDG_CONFIG_HOME", ".config")?.join("overbrowsered"))
 }
 
-fn load_most_recent_browser() -> Option<String> {
+fn load_most_recent_browser_id() -> Option<String> {
     let appid = std::fs::read_to_string(config_directory().ok()?.join("browser")).ok()?;
     Some(appid.trim().to_owned())
 }
 
-fn save_most_recent_browser(appid: &str) -> Result<()> {
+fn save_most_recent_browser_id(appid: &str) -> Result<()> {
     let directory = config_directory()?;
     std::fs::create_dir_all(&directory)?;
     std::fs::write(directory.join("browser"), appid)?;

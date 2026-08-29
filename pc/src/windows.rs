@@ -37,7 +37,7 @@ pub fn report(error: &anyhow::Error) {
 pub fn open(links: &[String]) -> Result<()> {
     let _com_alive_while_launching =
         w::CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE)?;
-    let most_recent_failure = match load_most_recent_browser() {
+    let most_recent_failure = match load_most_recent_browser_id() {
         Some(program_id) => match launch(links, &program_id) {
             Ok(()) => return Ok(()),
             Err(error) => Some(error),
@@ -55,7 +55,7 @@ pub fn open(links: &[String]) -> Result<()> {
         });
     };
     launch(links, &browser.program_id)?;
-    save_most_recent_browser(&browser.program_id)?;
+    save_most_recent_browser_id(&browser.program_id)?;
     Ok(())
 }
 
@@ -119,7 +119,6 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone)]
 struct Browser {
     program_id: String,
     display_name: String,
@@ -128,37 +127,32 @@ struct Browser {
 
 struct Overbrowsered {
     installed: Vec<Browser>,
-    most_recent: RefCell<Option<Browser>>,
+    most_recent_browser_id: RefCell<Option<String>>,
 }
 
 impl Overbrowsered {
     fn new() -> Self {
-        let installed = installed_browsers();
         Self {
-            most_recent: RefCell::new(
-                load_most_recent_browser()
-                    .and_then(|id| installed.iter().find(|b| b.program_id == id))
-                    .cloned(),
-            ),
-            installed,
+            most_recent_browser_id: RefCell::new(load_most_recent_browser_id()),
+            installed: installed_browsers(),
         }
     }
 
     fn foreground_changed(&self, window: &w::HWND) -> Option<()> {
         let browser = browser_of_window(&self.installed, window)?;
-        let mut most_recent = self.most_recent.borrow_mut();
-        if most_recent.as_ref().map(|b| &b.program_id) == Some(&browser.program_id) {
+        let mut most_recent_browser_id = self.most_recent_browser_id.borrow_mut();
+        if most_recent_browser_id.as_deref() == Some(browser.program_id.as_str()) {
             return None;
         }
-        save_most_recent_browser(&browser.program_id).ok()?;
-        *most_recent = Some(browser.clone());
+        save_most_recent_browser_id(&browser.program_id).ok()?;
+        *most_recent_browser_id = Some(browser.program_id.clone());
         Some(())
     }
 
     fn remember_topmost_browser(&self) -> Result<()> {
         if let Some(browser) = topmost_browser(&self.installed)? {
-            save_most_recent_browser(&browser.program_id)?;
-            *self.most_recent.borrow_mut() = Some(browser.clone());
+            save_most_recent_browser_id(&browser.program_id)?;
+            *self.most_recent_browser_id.borrow_mut() = Some(browser.program_id.clone());
         }
         Ok(())
     }
@@ -267,14 +261,15 @@ fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
 
 fn show_menu(window: &w::HWND) -> Result<()> {
     let (browser_line, default_line, we_are_default) = OVERBROWSERED.with(|overbrowsered| {
-        let browser_line = format!(
-            "Most recently used browser: {}",
-            overbrowsered
-                .most_recent
-                .borrow()
-                .as_ref()
-                .map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
-        );
+        let most_recent = match overbrowsered.most_recent_browser_id.borrow().as_deref() {
+            None => NO_BROWSER_SEEN_YET.to_owned(),
+            Some(id) => overbrowsered
+                .installed
+                .iter()
+                .find(|browser| browser.program_id == id)
+                .map_or_else(|| id.to_owned(), |browser| browser.display_name.clone()),
+        };
+        let browser_line = format!("Most recently used browser: {most_recent}");
         let default_handler = default_http_handler();
         let we_are_default = default_handler.as_deref() == Some(OUR_PROGRAM_ID);
         let default_line = if we_are_default {
@@ -537,10 +532,10 @@ fn default_http_handler() -> Option<String> {
     })
 }
 
-fn load_most_recent_browser() -> Option<String> {
+fn load_most_recent_browser_id() -> Option<String> {
     string_value(&w::HKEY::CURRENT_USER, Some(MOST_RECENT_BROWSER_KEY), None)
 }
 
-fn save_most_recent_browser(program_id: &str) -> w::SysResult<()> {
+fn save_most_recent_browser_id(program_id: &str) -> w::SysResult<()> {
     write_key(MOST_RECENT_BROWSER_KEY, None, program_id)
 }

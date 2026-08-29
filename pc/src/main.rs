@@ -29,20 +29,13 @@ fn default_handler_line(we_are_default: bool, handler_name: Option<&str>) -> Str
     if we_are_default {
         "Default http handler: me 👌".to_owned()
     } else {
-        format!(
-            "Default http handler: {} ☹️",
-            handler_name.unwrap_or("not me")
-        )
+        format!("Default http handler: {} ☹️", handler_name.unwrap_or("not me"))
     }
 }
 
 fn main() {
     let links: Vec<String> = std::env::args().skip(1).collect();
-    let outcome = if links.is_empty() {
-        platform::run()
-    } else {
-        platform::open(&links)
-    };
+    let outcome = if links.is_empty() { platform::run() } else { platform::open(&links) };
     if let Err(error) = outcome {
         platform::report(&error);
     }

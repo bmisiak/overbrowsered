@@ -21,11 +21,7 @@ const DESKTOP_FILE: &str = "overbrowsered.desktop";
 pub fn report(error: &anyhow::Error) {
     eprintln!("{error:#}");
     let _notification_is_best_effort = Command::new("notify-send")
-        .args([
-            "--app-name=Overbrowsered",
-            "Overbrowsered",
-            &format!("{error:#}"),
-        ])
+        .args(["--app-name=Overbrowsered", "Overbrowsered", &format!("{error:#}")])
         .spawn();
 }
 
@@ -66,16 +62,11 @@ pub fn run() -> Result<()> {
 }
 
 fn most_recent_browser_id() -> Option<String> {
-    MOST_RECENT_BROWSER_ID
-        .read()
-        .expect("no lock holder panics")
-        .clone()
+    MOST_RECENT_BROWSER_ID.read().expect("no lock holder panics").clone()
 }
 
 fn set_most_recent_browser_id(appid: String) {
-    *MOST_RECENT_BROWSER_ID
-        .write()
-        .expect("no lock holder panics") = Some(appid);
+    *MOST_RECENT_BROWSER_ID.write().expect("no lock holder panics") = Some(appid);
 }
 
 async fn watch_focused_windows_for_browsers() -> Result<()> {
@@ -83,9 +74,8 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
     if let Some(appid) = load_most_recent_browser_id() {
         set_most_recent_browser_id(appid);
     }
-    let accessibility = AccessibilityConnection::new()
-        .await
-        .context("connecting to the accessibility bus")?;
+    let accessibility =
+        AccessibilityConnection::new().await.context("connecting to the accessibility bus")?;
     accessibility.register_event::<ActivateEvent>().await?;
     let bus = DBusProxy::new(accessibility.connection()).await?;
 
@@ -97,16 +87,14 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
         let Some(bus_name) = activation.item.name() else {
             continue;
         };
-        let Ok(pid) = bus
-            .get_connection_unix_process_id(BusName::Unique(bus_name.to_owned()))
-            .await
+        let Ok(pid) =
+            bus.get_connection_unix_process_id(BusName::Unique(bus_name.to_owned())).await
         else {
             continue;
         };
         let running_as = recognize_process(pid);
-        let Some(browser) = installed
-            .iter()
-            .find(|b| Some(&b.recognized_by) == running_as.as_ref())
+        let Some(browser) =
+            installed.iter().find(|b| Some(&b.recognized_by) == running_as.as_ref())
         else {
             continue;
         };
@@ -114,10 +102,7 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
             continue;
         }
         if let Err(error) = save_most_recent_browser_id(&browser.appid) {
-            eprintln!(
-                "cannot save most recent browser {}: {error:#}",
-                browser.appid
-            );
+            eprintln!("cannot save most recent browser {}: {error:#}", browser.appid);
         }
         set_most_recent_browser_id(browser.appid.clone());
     }
@@ -146,22 +131,12 @@ impl Tray for Overbrowsered {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        vec![ksni::Icon {
-            width: 22,
-            height: 22,
-            data: TRAY_ICON_ARGB.to_vec(),
-        }]
+        vec![ksni::Icon { width: 22, height: 22, data: TRAY_ICON_ARGB.to_vec() }]
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let unclickable = |label: String| {
-            StandardItem {
-                label,
-                enabled: false,
-                ..Default::default()
-            }
-            .into()
-        };
+        let unclickable =
+            |label: String| StandardItem { label, enabled: false, ..Default::default() }.into();
         let most_recent = most_recent_browser_id().map(|appid| {
             installed_browsers()
                 .into_iter()
@@ -176,9 +151,7 @@ impl Tray for Overbrowsered {
             unclickable(most_recent_browser_line(most_recent)),
             unclickable(default_handler_line(
                 we_are_default,
-                default_handler
-                    .as_deref()
-                    .map(|file| file.trim_end_matches(".desktop")),
+                default_handler.as_deref().map(|file| file.trim_end_matches(".desktop")),
             )),
         ];
         if !we_are_default {
@@ -212,24 +185,17 @@ impl Tray for Overbrowsered {
 }
 
 fn default_browser_desktop_file() -> Option<String> {
-    let output = Command::new("xdg-settings")
-        .args(["get", "default-web-browser"])
-        .output()
-        .ok()?;
+    let output = Command::new("xdg-settings").args(["get", "default-web-browser"]).output().ok()?;
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()).filter(|file| !file.is_empty())
 }
 
 fn recognize_process(pid: u32) -> Option<RecognizedBy> {
     if let Ok(flatpak_info) = std::fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info")) {
-        let app = flatpak_info
-            .lines()
-            .find_map(|line| line.strip_prefix("name="))?;
+        let app = flatpak_info.lines().find_map(|line| line.strip_prefix("name="))?;
         return Some(RecognizedBy::FlatpakApp(app.to_owned()));
     }
     let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-    Some(RecognizedBy::Executable(
-        path.file_name()?.to_str()?.to_owned(),
-    ))
+    Some(RecognizedBy::Executable(path.file_name()?.to_str()?.to_owned()))
 }
 
 fn installed_browsers() -> Vec<Browser> {
@@ -273,10 +239,7 @@ fn register_as_link_handler() -> Result<()> {
     }
     std::fs::create_dir_all(&directory)?;
     std::fs::write(path, entry)?;
-    if let Err(error) = Command::new("update-desktop-database")
-        .arg(&directory)
-        .spawn()
-    {
+    if let Err(error) = Command::new("update-desktop-database").arg(&directory).spawn() {
         eprintln!("cannot run update-desktop-database: {error}");
     }
     Ok(())

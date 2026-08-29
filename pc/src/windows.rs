@@ -29,10 +29,7 @@ thread_local! {
 
 pub fn report(error: &anyhow::Error) {
     let text = format!("{error:#}");
-    if w::HWND::NULL
-        .MessageBox(&text, "Overbrowsered", co::MB::ICONERROR)
-        .is_err()
-    {
+    if w::HWND::NULL.MessageBox(&text, "Overbrowsered", co::MB::ICONERROR).is_err() {
         eprintln!("{text}");
     }
 }
@@ -85,9 +82,7 @@ fn topmost_browser(installed: &[Browser]) -> Result<Option<&Browser>> {
 
 fn browser_of_window<'a>(installed: &'a [Browser], window: &w::HWND) -> Option<&'a Browser> {
     let executable = executable_path_of_window(window)?;
-    installed
-        .iter()
-        .find(|browser| browser.executable_path == executable)
+    installed.iter().find(|browser| browser.executable_path == executable)
 }
 
 pub fn run() -> Result<()> {
@@ -221,13 +216,7 @@ extern "system" fn window_proc(
         }
         return 0;
     }
-    unsafe {
-        window.DefWindowProc(w::msg::Wm {
-            msg_id: message,
-            wparam,
-            lparam,
-        })
-    }
+    unsafe { window.DefWindowProc(w::msg::Wm { msg_id: message, wparam, lparam }) }
 }
 
 fn restore_tray_icon(window: &w::HWND) -> Result<()> {
@@ -261,25 +250,18 @@ fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
 
 fn show_menu(window: &w::HWND) -> Result<()> {
     let (browser_line, default_line, we_are_default) = OVERBROWSERED.with(|overbrowsered| {
-        let most_recent = overbrowsered
-            .most_recent_browser_id
-            .borrow()
-            .as_deref()
-            .map(|id| {
-                overbrowsered
-                    .installed
-                    .iter()
-                    .find(|browser| browser.program_id == id)
-                    .map_or_else(|| id.to_owned(), |browser| browser.display_name.clone())
-            });
+        let most_recent = overbrowsered.most_recent_browser_id.borrow().as_deref().map(|id| {
+            overbrowsered
+                .installed
+                .iter()
+                .find(|browser| browser.program_id == id)
+                .map_or_else(|| id.to_owned(), |browser| browser.display_name.clone())
+        });
         let browser_line = most_recent_browser_line(most_recent);
         let default_handler = default_http_handler();
         let we_are_default = default_handler.as_deref() == Some(OUR_PROGRAM_ID);
         let handler_name = default_handler.as_ref().and_then(|id| {
-            overbrowsered
-                .installed
-                .iter()
-                .find(|browser| &browser.program_id == id)
+            overbrowsered.installed.iter().find(|browser| &browser.program_id == id)
         });
         let default_line = default_handler_line(
             we_are_default,
@@ -289,22 +271,10 @@ fn show_menu(window: &w::HWND) -> Result<()> {
     });
     let mut menu = w::HMENU::CreatePopupMenu()?;
     let unclickable = co::MF::STRING | co::MF::DISABLED;
-    menu.AppendMenu(
-        unclickable,
-        w::IdMenu::None,
-        w::BmpPtrStr::from_str(AUTHOR_LINE),
-    )?;
+    menu.AppendMenu(unclickable, w::IdMenu::None, w::BmpPtrStr::from_str(AUTHOR_LINE))?;
     menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
-    menu.AppendMenu(
-        unclickable,
-        w::IdMenu::None,
-        w::BmpPtrStr::from_str(&browser_line),
-    )?;
-    menu.AppendMenu(
-        unclickable,
-        w::IdMenu::None,
-        w::BmpPtrStr::from_str(&default_line),
-    )?;
+    menu.AppendMenu(unclickable, w::IdMenu::None, w::BmpPtrStr::from_str(&browser_line))?;
+    menu.AppendMenu(unclickable, w::IdMenu::None, w::BmpPtrStr::from_str(&default_line))?;
     if !we_are_default {
         menu.AppendMenu(
             co::MF::STRING,
@@ -313,11 +283,7 @@ fn show_menu(window: &w::HWND) -> Result<()> {
         )?;
     }
     menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
-    menu.AppendMenu(
-        co::MF::STRING,
-        w::IdMenu::Id(QUIT_MENU_ITEM),
-        w::BmpPtrStr::from_str("Quit"),
-    )?;
+    menu.AppendMenu(co::MF::STRING, w::IdMenu::Id(QUIT_MENU_ITEM), w::BmpPtrStr::from_str("Quit"))?;
 
     let cursor = w::GetCursorPos()?;
     window.SetForegroundWindow();
@@ -334,12 +300,7 @@ fn show_menu(window: &w::HWND) -> Result<()> {
 
 fn open_default_apps_settings() -> Result<()> {
     unsafe {
-        SHChangeNotify(
-            SHCNE_ASSOCCHANGED as i32,
-            SHCNF_IDLIST,
-            std::ptr::null(),
-            std::ptr::null(),
-        )
+        SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, std::ptr::null(), std::ptr::null())
     };
     w::ShellExecuteEx(&w::SHELLEXECUTEINFO {
         file: "ms-settings:defaultapps?registeredAppUser=Overbrowsered",
@@ -354,9 +315,7 @@ fn executable_path_of_window(window: &w::HWND) -> Option<String> {
     let (_thread, process) = window.GetWindowThreadProcessId();
     let handle =
         w::HPROCESS::OpenProcess(co::PROCESS::QUERY_LIMITED_INFORMATION, false, process).ok()?;
-    let path = handle
-        .QueryFullProcessImageName(co::PROCESS_NAME::WIN32)
-        .ok()?;
+    let path = handle.QueryFullProcessImageName(co::PROCESS_NAME::WIN32).ok()?;
     Some(path.to_lowercase())
 }
 
@@ -410,10 +369,7 @@ fn command_executable(program_id: &str) -> Option<String> {
         Some(&format!("{program_id}\\shell\\open\\command")),
         None,
     )?;
-    w::CommandLineToArgv(command.trim())
-        .ok()?
-        .into_iter()
-        .next()
+    w::CommandLineToArgv(command.trim()).ok()?.into_iter().next()
 }
 
 fn write_key(sub_key: &str, name: Option<&str>, value: &str) -> w::SysResult<()> {
@@ -434,79 +390,26 @@ fn write_key(sub_key: &str, name: Option<&str>, value: &str) -> w::SysResult<()>
 fn register_as_link_handler() -> Result<()> {
     let executable = std::env::current_exe()?;
     let command = format!("\"{}\" \"%1\"", executable.display());
-    let default_icon = format!("\"{}\",0", executable.display());
+    let icon = format!("\"{}\",0", executable.display());
+    let class = format!("Software\\Classes\\{OUR_PROGRAM_ID}");
+    let urls = format!("{CAPABILITIES_KEY}\\URLAssociations");
+    let files = format!("{CAPABILITIES_KEY}\\FileAssociations");
     for (sub_key, name, value) in [
-        (
-            format!("Software\\Classes\\{OUR_PROGRAM_ID}"),
-            None,
-            "Overbrowsered URL Handler",
-        ),
-        (
-            format!("Software\\Classes\\{OUR_PROGRAM_ID}\\shell\\open\\command"),
-            None,
-            command.as_str(),
-        ),
-        (
-            format!("Software\\Classes\\{OUR_PROGRAM_ID}\\DefaultIcon"),
-            None,
-            default_icon.as_str(),
-        ),
+        (class.clone(), None, "Overbrowsered URL Handler"),
+        (format!("{class}\\shell\\open\\command"), None, command.as_str()),
+        (format!("{class}\\DefaultIcon"), None, icon.as_str()),
         (BROWSER_CLIENT_KEY.to_owned(), None, "Overbrowsered"),
-        (
-            format!("{BROWSER_CLIENT_KEY}\\shell\\open\\command"),
-            None,
-            command.as_str(),
-        ),
-        (
-            format!("{BROWSER_CLIENT_KEY}\\DefaultIcon"),
-            None,
-            default_icon.as_str(),
-        ),
-        (
-            CAPABILITIES_KEY.to_owned(),
-            Some("ApplicationName"),
-            "Overbrowsered",
-        ),
-        (
-            CAPABILITIES_KEY.to_owned(),
-            Some("ApplicationDescription"),
-            APP_DESCRIPTION,
-        ),
-        (
-            CAPABILITIES_KEY.to_owned(),
-            Some("ApplicationIcon"),
-            default_icon.as_str(),
-        ),
-        (
-            format!("{CAPABILITIES_KEY}\\Startmenu"),
-            Some("StartMenuInternet"),
-            "Overbrowsered",
-        ),
-        (
-            format!("{CAPABILITIES_KEY}\\URLAssociations"),
-            Some("http"),
-            OUR_PROGRAM_ID,
-        ),
-        (
-            format!("{CAPABILITIES_KEY}\\URLAssociations"),
-            Some("https"),
-            OUR_PROGRAM_ID,
-        ),
-        (
-            format!("{CAPABILITIES_KEY}\\FileAssociations"),
-            Some(".htm"),
-            OUR_PROGRAM_ID,
-        ),
-        (
-            format!("{CAPABILITIES_KEY}\\FileAssociations"),
-            Some(".html"),
-            OUR_PROGRAM_ID,
-        ),
-        (
-            "Software\\RegisteredApplications".to_owned(),
-            Some("Overbrowsered"),
-            CAPABILITIES_KEY,
-        ),
+        (format!("{BROWSER_CLIENT_KEY}\\shell\\open\\command"), None, command.as_str()),
+        (format!("{BROWSER_CLIENT_KEY}\\DefaultIcon"), None, icon.as_str()),
+        (CAPABILITIES_KEY.to_owned(), Some("ApplicationName"), "Overbrowsered"),
+        (CAPABILITIES_KEY.to_owned(), Some("ApplicationDescription"), APP_DESCRIPTION),
+        (CAPABILITIES_KEY.to_owned(), Some("ApplicationIcon"), icon.as_str()),
+        (format!("{CAPABILITIES_KEY}\\Startmenu"), Some("StartMenuInternet"), "Overbrowsered"),
+        (urls.clone(), Some("http"), OUR_PROGRAM_ID),
+        (urls, Some("https"), OUR_PROGRAM_ID),
+        (files.clone(), Some(".htm"), OUR_PROGRAM_ID),
+        (files, Some(".html"), OUR_PROGRAM_ID),
+        ("Software\\RegisteredApplications".to_owned(), Some("Overbrowsered"), CAPABILITIES_KEY),
     ] {
         write_key(&sub_key, name, value)?;
     }

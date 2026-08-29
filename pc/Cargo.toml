@@ -14,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 tray-icon = "0.24"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+async-channel = "2"
 atspi = "0.30"
 freedesktop-desktop-entry = "0.8"
 futures-lite = "2"

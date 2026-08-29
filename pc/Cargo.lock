@@ -1263,6 +1263,7 @@ dependencies = [
 name = "overbrowsered"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "atspi",
  "confy",
  "freedesktop-desktop-entry",

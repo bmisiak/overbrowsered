@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::process::Command;
-use std::sync::mpsc::Receiver;
 use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -89,24 +88,22 @@ fn build_tray(most_recently_used_browser_item: &MenuItem) -> TrayIcon {
         .expect("the tray icon can be created")
 }
 
-fn remember_newly_activated_browsers(
-    activations: &Receiver<Browser>,
+fn remember_activated_browser(
+    browser: Browser,
     menu_item: &MenuItem,
     remembered: &mut Option<Browser>,
 ) {
-    for browser in activations.try_iter() {
-        if remembered.as_ref() == Some(&browser) {
-            continue;
-        }
-        menu_item.set_text(most_recently_used_browser_line(Some(&browser)));
-        persist_most_recently_used_browser(&browser);
-        *remembered = Some(browser);
+    if remembered.as_ref() == Some(&browser) {
+        return;
     }
+    menu_item.set_text(most_recently_used_browser_line(Some(&browser)));
+    persist_most_recently_used_browser(&browser);
+    *remembered = Some(browser);
 }
 
 #[cfg(target_os = "linux")]
 fn show_menu_while_watching_for_browsers() {
-    let (report_activation, activations) = std::sync::mpsc::channel();
+    let (report_activation, activations) = async_channel::unbounded();
     linux::watch_for_activated_browsers(report_activation);
 
     gtk::init().expect("gtk starts");
@@ -114,31 +111,34 @@ fn show_menu_while_watching_for_browsers() {
     let menu_item = MenuItem::new(most_recently_used_browser_line(remembered.as_ref()), false, None);
     let _tray = build_tray(&menu_item);
 
-    gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-        remember_newly_activated_browsers(&activations, &menu_item, &mut remembered);
-        gtk::glib::ControlFlow::Continue
+    gtk::glib::spawn_future_local(async move {
+        while let Ok(browser) = activations.recv().await {
+            remember_activated_browser(browser, &menu_item, &mut remembered);
+        }
     });
     gtk::main();
 }
 
 #[cfg(target_os = "windows")]
 fn show_menu_while_watching_for_browsers() {
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetMessageW, SetTimer, TranslateMessage,
+        DispatchMessageW, GetMessageW, TranslateMessage,
     };
-
-    let (report_activation, activations) = std::sync::mpsc::channel();
-    windows::watch_for_activated_browsers(report_activation);
 
     let mut remembered = load_most_recently_used_browser();
     let menu_item = MenuItem::new(most_recently_used_browser_line(remembered.as_ref()), false, None);
     let _tray = build_tray(&menu_item);
 
+    let (report_activation, activations) = std::sync::mpsc::channel();
+    windows::watch_for_activated_browsers(report_activation, unsafe { GetCurrentThreadId() });
+
     unsafe {
-        SetTimer(std::ptr::null_mut(), 0, 500, None);
         let mut message = std::mem::zeroed();
         while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) != 0 {
-            remember_newly_activated_browsers(&activations, &menu_item, &mut remembered);
+            for browser in activations.try_iter() {
+                remember_activated_browser(browser, &menu_item, &mut remembered);
+            }
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -148,13 +148,13 @@ fn show_menu_while_watching_for_browsers() {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::Browser;
+    use async_channel::Sender;
     use atspi::AccessibilityConnection;
     use atspi::events::window::ActivateEvent;
     use atspi::{Event, WindowEvents};
     use freedesktop_desktop_entry::{DesktopEntry, desktop_entries, get_languages_from_env};
     use futures_lite::StreamExt;
     use std::path::Path;
-    use std::sync::mpsc::Sender;
     use zbus::fdo::DBusProxy;
     use zbus::names::BusName;
 
@@ -163,6 +163,7 @@ mod linux {
             futures_lite::future::block_on(report_activated_browsers(report_activation))
         });
     }
+
 
     async fn report_activated_browsers(report_activation: Sender<Browser>) {
         let browsers = installed_browsers_by_executable_name();
@@ -201,7 +202,7 @@ mod linux {
                 .iter()
                 .find(|(candidate, _)| candidate == executable_name)
             {
-                let _ = report_activation.send(browser.clone());
+                let _ = report_activation.send(browser.clone()).await;
             }
         }
     }
@@ -257,18 +258,21 @@ mod windows {
     use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetMessageW, GetWindowThreadProcessId,
-        TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+        PostThreadMessageW, TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+        WM_NULL,
     };
     use winreg::RegKey;
     use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
     static BROWSERS_BY_EXECUTABLE_PATH: OnceLock<Vec<(String, Browser)>> = OnceLock::new();
     static ACTIVATION_REPORTER: OnceLock<Sender<Browser>> = OnceLock::new();
+    static MENU_THREAD_TO_WAKE: OnceLock<u32> = OnceLock::new();
 
-    pub fn watch_for_activated_browsers(report_activation: Sender<Browser>) {
+    pub fn watch_for_activated_browsers(report_activation: Sender<Browser>, menu_thread: u32) {
         std::thread::spawn(move || {
             let _ = BROWSERS_BY_EXECUTABLE_PATH.set(installed_browsers_by_executable_path());
             let _ = ACTIVATION_REPORTER.set(report_activation);
+            let _ = MENU_THREAD_TO_WAKE.set(menu_thread);
             unsafe {
                 SetWinEventHook(
                     EVENT_SYSTEM_FOREGROUND,
@@ -311,6 +315,9 @@ mod windows {
         };
         if let Some(reporter) = ACTIVATION_REPORTER.get() {
             let _ = reporter.send(browser.clone());
+        }
+        if let Some(menu_thread) = MENU_THREAD_TO_WAKE.get() {
+            unsafe { PostThreadMessageW(*menu_thread, WM_NULL, 0, 0) };
         }
     }
 

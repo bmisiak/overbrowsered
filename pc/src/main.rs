@@ -1,57 +1,29 @@
-use serde::{Deserialize, Serialize};
 use std::process::Command;
-use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-const CONFIGURATION_NAME: &str = "overbrowsered";
 const AUTHOR_LINE: &str = "Overbrowsered by @bmisiak";
 const NO_BROWSER_SEEN_YET: &str = "none detected yet";
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-struct Browser {
-    display_name: String,
-    launch_argv: Vec<String>,
-}
+#[cfg(target_os = "linux")]
+use linux as platform;
+#[cfg(target_os = "windows")]
+use windows as platform;
 
-#[derive(Default, Serialize, Deserialize)]
-struct PersistedState {
-    most_recently_used_browser: Option<Browser>,
+#[derive(Clone)]
+struct Browser {
+    id: String,
+    display_name: String,
 }
 
 fn main() {
     let links: Vec<String> = std::env::args().skip(1).collect();
     if links.is_empty() {
-        show_menu_while_watching_for_browsers();
-    } else {
-        open_links_in_most_recently_used_browser(&links);
+        return platform::watch_for_browsers_and_serve_menu();
     }
-}
-
-fn load_most_recently_used_browser() -> Option<Browser> {
-    confy::load::<PersistedState>(CONFIGURATION_NAME, None)
-        .ok()?
-        .most_recently_used_browser
-}
-
-fn persist_most_recently_used_browser(browser: &Browser) {
-    let _ = confy::store(
-        CONFIGURATION_NAME,
-        None,
-        PersistedState {
-            most_recently_used_browser: Some(browser.clone()),
-        },
-    );
-}
-
-fn open_links_in_most_recently_used_browser(links: &[String]) {
-    let Some(browser) = load_most_recently_used_browser() else {
+    let Some(argv) = platform::remembered_browser().and_then(|id| platform::launch_argv(&id)) else {
         eprintln!("Overbrowsered has yet to see you use a browser.");
         return;
     };
-    let _ = Command::new(&browser.launch_argv[0])
-        .args(&browser.launch_argv[1..])
-        .args(links)
-        .spawn();
+    let _ = Command::new(&argv[0]).args(&argv[1..]).args(links).spawn();
 }
 
 fn most_recently_used_browser_line(browser: Option<&Browser>) -> String {
@@ -61,119 +33,88 @@ fn most_recently_used_browser_line(browser: Option<&Browser>) -> String {
     )
 }
 
-fn embedded_menu_bar_icon() -> Icon {
-    let pixels = image::load_from_memory(include_bytes!(
-        "../../Overbrowsered/Assets.xcassets/StatusBarButtonImage.imageset/overbrowsered44.png"
-    ))
-    .expect("the embedded icon decodes")
-    .into_rgba8();
-    let (width, height) = pixels.dimensions();
-    Icon::from_rgba(pixels.into_raw(), width, height).expect("the embedded icon is valid rgba")
-}
-
-fn build_tray(most_recently_used_browser_item: &MenuItem) -> TrayIcon {
-    let menu = Menu::new();
-    let _ = menu.append_items(&[
-        &MenuItem::new(AUTHOR_LINE, false, None),
-        &PredefinedMenuItem::separator(),
-        most_recently_used_browser_item,
-        &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::quit(Some("Quit")),
-    ]);
-    TrayIconBuilder::new()
-        .with_icon(embedded_menu_bar_icon())
-        .with_tooltip("Overbrowsered")
-        .with_menu(Box::new(menu))
-        .build()
-        .expect("the tray icon can be created")
-}
-
-fn remember_activated_browser(
-    browser: Browser,
-    menu_item: &MenuItem,
-    remembered: &mut Option<Browser>,
-) {
-    if remembered.as_ref() == Some(&browser) {
-        return;
-    }
-    menu_item.set_text(most_recently_used_browser_line(Some(&browser)));
-    persist_most_recently_used_browser(&browser);
-    *remembered = Some(browser);
-}
-
-#[cfg(target_os = "linux")]
-fn show_menu_while_watching_for_browsers() {
-    let (report_activation, activations) = async_channel::unbounded();
-    linux::watch_for_activated_browsers(report_activation);
-
-    gtk::init().expect("gtk starts");
-    let mut remembered = load_most_recently_used_browser();
-    let menu_item = MenuItem::new(most_recently_used_browser_line(remembered.as_ref()), false, None);
-    let _tray = build_tray(&menu_item);
-
-    gtk::glib::spawn_future_local(async move {
-        while let Ok(browser) = activations.recv().await {
-            remember_activated_browser(browser, &menu_item, &mut remembered);
-        }
-    });
-    gtk::main();
-}
-
-#[cfg(target_os = "windows")]
-fn show_menu_while_watching_for_browsers() {
-    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetMessageW, TranslateMessage,
-    };
-
-    let mut remembered = load_most_recently_used_browser();
-    let menu_item = MenuItem::new(most_recently_used_browser_line(remembered.as_ref()), false, None);
-    let _tray = build_tray(&menu_item);
-
-    let (report_activation, activations) = std::sync::mpsc::channel();
-    windows::watch_for_activated_browsers(report_activation, unsafe { GetCurrentThreadId() });
-
-    unsafe {
-        let mut message = std::mem::zeroed();
-        while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) != 0 {
-            for browser in activations.try_iter() {
-                remember_activated_browser(browser, &menu_item, &mut remembered);
-            }
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-}
-
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::Browser;
-    use async_channel::Sender;
-    use atspi::AccessibilityConnection;
+    use super::{AUTHOR_LINE, Browser, most_recently_used_browser_line};
     use atspi::events::window::ActivateEvent;
-    use atspi::{Event, WindowEvents};
-    use freedesktop_desktop_entry::{DesktopEntry, desktop_entries, get_languages_from_env};
+    use atspi::{AccessibilityConnection, Event, WindowEvents};
+    use freedesktop_desktop_entry::{
+        DesktopEntry, default_paths, desktop_entries, get_languages_from_env,
+    };
     use futures_lite::StreamExt;
-    use std::path::Path;
+    use ksni::menu::{MenuItem, StandardItem};
+    use ksni::{Tray, TrayMethods};
+    use std::path::{Path, PathBuf};
     use zbus::fdo::DBusProxy;
     use zbus::names::BusName;
 
-    pub fn watch_for_activated_browsers(report_activation: Sender<Browser>) {
-        std::thread::spawn(move || {
-            futures_lite::future::block_on(report_activated_browsers(report_activation))
-        });
+    const TRAY_ICON_ARGB: &[u8] = include_bytes!("../icons/tray-22.argb");
+
+    struct Overbrowsered {
+        browser: Option<Browser>,
     }
 
+    impl Tray for Overbrowsered {
+        fn id(&self) -> String {
+            "overbrowsered".into()
+        }
 
-    async fn report_activated_browsers(report_activation: Sender<Browser>) {
-        let browsers = installed_browsers_by_executable_name();
+        fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+            vec![ksni::Icon {
+                width: 22,
+                height: 22,
+                data: TRAY_ICON_ARGB.to_vec(),
+            }]
+        }
+
+        fn menu(&self) -> Vec<MenuItem<Self>> {
+            let disabled = |label: String| {
+                StandardItem {
+                    label,
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into()
+            };
+            vec![
+                disabled(AUTHOR_LINE.into()),
+                MenuItem::Separator,
+                disabled(most_recently_used_browser_line(self.browser.as_ref())),
+                MenuItem::Separator,
+                StandardItem {
+                    label: "Quit".into(),
+                    activate: Box::new(|_| std::process::exit(0)),
+                    ..Default::default()
+                }
+                .into(),
+            ]
+        }
+    }
+
+    pub fn watch_for_browsers_and_serve_menu() {
+        futures_lite::future::block_on(serve());
+    }
+
+    async fn serve() {
+        let browsers = installed_browsers();
+        let remembered = remembered_browser()
+            .and_then(|id| browsers.iter().find(|(_, browser)| browser.id == id))
+            .map(|(_, browser)| browser.clone());
+        let tray = Overbrowsered {
+            browser: remembered,
+        }
+        .assume_sni_available(true)
+        .spawn()
+        .await
+        .expect("the session bus is reachable");
+
         let accessibility = AccessibilityConnection::new()
             .await
             .expect("the accessibility bus is reachable");
         accessibility
             .register_event::<ActivateEvent>()
             .await
-            .expect("window activation events can be subscribed to");
+            .expect("window activations can be subscribed to");
         let bus = DBusProxy::new(accessibility.connection())
             .await
             .expect("the session bus is reachable");
@@ -183,74 +124,105 @@ mod linux {
             let Ok(Event::Window(WindowEvents::Activate(activation))) = event else {
                 continue;
             };
-            let Some(unique_name) = activation.item.name() else {
+            let Some(name) = activation.item.name() else {
                 continue;
             };
-            let Ok(process_id) = bus
-                .get_connection_unix_process_id(BusName::Unique(unique_name.to_owned()))
+            let Ok(process) = bus
+                .get_connection_unix_process_id(BusName::Unique(name.to_owned()))
                 .await
             else {
                 continue;
             };
-            let Ok(executable) = std::fs::read_link(format!("/proc/{process_id}/exe")) else {
+            let Ok(executable) = std::fs::read_link(format!("/proc/{process}/exe")) else {
                 continue;
             };
-            let Some(executable_name) = executable.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if let Some((_, browser)) = browsers
+            let Some((_, browser)) = browsers
                 .iter()
-                .find(|(candidate, _)| candidate == executable_name)
-            {
-                let _ = report_activation.send(browser.clone()).await;
+                .find(|(candidate, _)| Some(candidate.as_str()) == file_name(&executable))
+            else {
+                continue;
+            };
+            let changed = tray
+                .update(|tray| {
+                    let changed = tray.browser.as_ref().map(|b| &b.id) != Some(&browser.id);
+                    tray.browser = Some(browser.clone());
+                    changed
+                })
+                .await;
+            if changed == Some(true) {
+                remember(&browser.id);
             }
         }
     }
 
-    fn installed_browsers_by_executable_name() -> Vec<(String, Browser)> {
+    fn file_name(path: &Path) -> Option<&str> {
+        path.file_name()?.to_str()
+    }
+
+    fn installed_browsers() -> Vec<(String, Browser)> {
         let locales = get_languages_from_env();
         desktop_entries(&locales)
             .iter()
-            .filter(|entry| handles_web_links(entry))
             .filter_map(|entry| {
-                let launch_argv = launch_argv_from_exec(entry.exec()?);
-                let executable_name = Path::new(launch_argv.first()?)
-                    .file_name()?
-                    .to_str()?
-                    .to_owned();
+                if !entry.mime_type()?.contains(&"x-scheme-handler/http") {
+                    return None;
+                }
+                let argv = exec_argv(entry.exec()?);
                 Some((
-                    executable_name,
+                    file_name(Path::new(argv.first()?))?.to_owned(),
                     Browser {
+                        id: entry.appid.clone(),
                         display_name: entry
                             .name(&locales)
                             .map_or_else(|| entry.appid.clone(), |name| name.into_owned()),
-                        launch_argv,
                     },
                 ))
             })
             .collect()
     }
 
-    fn handles_web_links(entry: &DesktopEntry) -> bool {
-        entry.mime_type().is_some_and(|mime_types| {
-            mime_types.contains(&"x-scheme-handler/http")
-                || mime_types.contains(&"x-scheme-handler/https")
-        })
+    pub fn launch_argv(appid: &str) -> Option<Vec<String>> {
+        let locales = get_languages_from_env();
+        let entry = default_paths()
+            .find_map(|dir| DesktopEntry::from_path(dir.join(appid), Some(&locales)).ok())?;
+        Some(exec_argv(entry.exec()?))
     }
 
-    fn launch_argv_from_exec(exec: &str) -> Vec<String> {
+    fn exec_argv(exec: &str) -> Vec<String> {
         exec.split_whitespace()
             .filter(|token| !token.starts_with('%'))
             .map(|token| token.trim_matches('"').to_owned())
             .collect()
     }
+
+    fn config_directory() -> PathBuf {
+        let base = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+            format!("{}/.config", std::env::var("HOME").unwrap_or_default())
+        });
+        PathBuf::from(base).join("overbrowsered")
+    }
+
+    pub fn remembered_browser() -> Option<String> {
+        let id = std::fs::read_to_string(config_directory().join("browser")).ok()?;
+        Some(id.trim().to_owned())
+    }
+
+    fn remember(appid: &str) {
+        let directory = config_directory();
+        let temporary = directory.join("browser.tmp");
+        let _ = std::fs::create_dir_all(&directory);
+        if std::fs::write(&temporary, appid).is_ok() {
+            let _ = std::fs::rename(temporary, directory.join("browser"));
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
 mod windows {
-    use super::Browser;
-    use std::sync::OnceLock;
-    use std::sync::mpsc::Sender;
+    use super::{AUTHOR_LINE, Browser, most_recently_used_browser_line};
+    use std::cell::RefCell;
+    use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tray_icon::{Icon, MouseButtonState, TrayIconBuilder, TrayIconEvent};
     use windows_sys::Win32::Foundation::{CloseHandle, HWND};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -258,38 +230,86 @@ mod windows {
     use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetMessageW, GetWindowThreadProcessId,
-        PostThreadMessageW, TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-        WM_NULL,
+        TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
     };
     use winreg::RegKey;
     use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
-    static BROWSERS_BY_EXECUTABLE_PATH: OnceLock<Vec<(String, Browser)>> = OnceLock::new();
-    static ACTIVATION_REPORTER: OnceLock<Sender<Browser>> = OnceLock::new();
-    static MENU_THREAD_TO_WAKE: OnceLock<u32> = OnceLock::new();
+    const TRAY_ICON_RGBA: &[u8] = include_bytes!("../icons/tray-44.rgba");
+    const REMEMBERED_BROWSER_KEY: &str = "Software\\Overbrowsered";
 
-    pub fn watch_for_activated_browsers(report_activation: Sender<Browser>, menu_thread: u32) {
-        std::thread::spawn(move || {
-            let _ = BROWSERS_BY_EXECUTABLE_PATH.set(installed_browsers_by_executable_path());
-            let _ = ACTIVATION_REPORTER.set(report_activation);
-            let _ = MENU_THREAD_TO_WAKE.set(menu_thread);
-            unsafe {
-                SetWinEventHook(
-                    EVENT_SYSTEM_FOREGROUND,
-                    EVENT_SYSTEM_FOREGROUND,
-                    std::ptr::null_mut(),
-                    Some(on_foreground_window_changed),
-                    0,
-                    0,
-                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-                );
-                let mut message = std::mem::zeroed();
-                while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) != 0 {
-                    TranslateMessage(&message);
-                    DispatchMessageW(&message);
+    thread_local! {
+        static INSTALLED_BROWSERS: Vec<(String, Browser)> = installed_browsers();
+        static REMEMBERED_BROWSER: RefCell<Option<Browser>> = RefCell::new(
+            remembered_browser().and_then(|id| {
+                INSTALLED_BROWSERS.with(|browsers| {
+                    browsers
+                        .iter()
+                        .find(|(_, browser)| browser.id == id)
+                        .map(|(_, browser)| browser.clone())
+                })
+            }),
+        );
+    }
+
+    pub fn watch_for_browsers_and_serve_menu() {
+        INSTALLED_BROWSERS.with(|_| ());
+        REMEMBERED_BROWSER.with(|_| ());
+
+        let tray = TrayIconBuilder::new()
+            .with_icon(
+                Icon::from_rgba(TRAY_ICON_RGBA.to_vec(), 44, 44).expect("the embedded icon is rgba"),
+            )
+            .with_tooltip("Overbrowsered")
+            .with_menu_on_left_click(false)
+            .with_menu_on_right_click(false)
+            .build()
+            .expect("the tray icon can be created");
+
+        unsafe {
+            SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                std::ptr::null_mut(),
+                Some(on_foreground_window_changed),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            );
+
+            let clicks = TrayIconEvent::receiver();
+            let mut message = std::mem::zeroed();
+            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) != 0 {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+                for click in clicks.try_iter() {
+                    if matches!(
+                        click,
+                        TrayIconEvent::Click {
+                            button_state: MouseButtonState::Up,
+                            ..
+                        }
+                    ) {
+                        tray.set_menu(Some(Box::new(menu())));
+                        tray.show_menu();
+                    }
                 }
             }
-        });
+        }
+    }
+
+    fn menu() -> Menu {
+        let line = REMEMBERED_BROWSER
+            .with_borrow(|browser| most_recently_used_browser_line(browser.as_ref()));
+        let menu = Menu::new();
+        let _ = menu.append_items(&[
+            &MenuItem::new(AUTHOR_LINE, false, None),
+            &PredefinedMenuItem::separator(),
+            &MenuItem::new(line, false, None),
+            &PredefinedMenuItem::separator(),
+            &PredefinedMenuItem::quit(Some("Quit")),
+        ]);
+        menu
     }
 
     unsafe extern "system" fn on_foreground_window_changed(
@@ -301,65 +321,67 @@ mod windows {
         _thread: u32,
         _time: u32,
     ) {
-        let Some(executable_path) = unsafe { executable_path_of_window(window) } else {
+        let Some(executable) = (unsafe { executable_path_of_window(window) }) else {
             return;
         };
-        let Some(browsers) = BROWSERS_BY_EXECUTABLE_PATH.get() else {
+        let Some(browser) = INSTALLED_BROWSERS.with(|browsers| {
+            browsers
+                .iter()
+                .find(|(candidate, _)| *candidate == executable.to_lowercase())
+                .map(|(_, browser)| browser.clone())
+        }) else {
             return;
         };
-        let Some((_, browser)) = browsers
-            .iter()
-            .find(|(candidate, _)| *candidate == executable_path.to_lowercase())
-        else {
-            return;
-        };
-        if let Some(reporter) = ACTIVATION_REPORTER.get() {
-            let _ = reporter.send(browser.clone());
-        }
-        if let Some(menu_thread) = MENU_THREAD_TO_WAKE.get() {
-            unsafe { PostThreadMessageW(*menu_thread, WM_NULL, 0, 0) };
-        }
+        REMEMBERED_BROWSER.with_borrow_mut(|remembered| {
+            if remembered.as_ref().map(|b| &b.id) == Some(&browser.id) {
+                return;
+            }
+            remember(&browser.id);
+            *remembered = Some(browser);
+        });
     }
 
     unsafe fn executable_path_of_window(window: HWND) -> Option<String> {
-        let mut process_id = 0;
-        unsafe { GetWindowThreadProcessId(window, &mut process_id) };
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
-        if process.is_null() {
+        let mut process = 0;
+        unsafe { GetWindowThreadProcessId(window, &mut process) };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process) };
+        if handle.is_null() {
             return None;
         }
         let mut buffer = [0u16; 1024];
         let mut length = buffer.len() as u32;
-        let queried = unsafe {
-            QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut length)
-        };
-        unsafe { CloseHandle(process) };
+        let queried =
+            unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length) };
+        unsafe { CloseHandle(handle) };
         (queried != 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
     }
 
-    fn installed_browsers_by_executable_path() -> Vec<(String, Browser)> {
+    fn installed_browsers() -> Vec<(String, Browser)> {
         let mut browsers = Vec::new();
-        for root in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
-            let root = RegKey::predef(root);
-            let Ok(registered_applications) = root.open_subkey("SOFTWARE\\RegisteredApplications")
-            else {
+        for predefined in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+            let root = RegKey::predef(predefined);
+            let Ok(registered) = root.open_subkey("SOFTWARE\\RegisteredApplications") else {
                 continue;
             };
-            for application_name in registered_applications.enum_values().flatten().map(|(name, _)| name) {
-                let Ok(capabilities_path) =
-                    registered_applications.get_value::<String, _>(&application_name)
+            for (display_name, _) in registered.enum_values().flatten() {
+                let Some(program_id) = registered
+                    .get_value::<String, _>(&display_name)
+                    .ok()
+                    .and_then(|capabilities| {
+                        root.open_subkey(format!("{capabilities}\\URLAssociations")).ok()
+                    })
+                    .and_then(|associations| associations.get_value::<String, _>("http").ok())
                 else {
                     continue;
                 };
-                let Some(executable_path) = web_link_handler_executable(&root, &capabilities_path)
-                else {
+                let Some(argv) = launch_argv(&program_id) else {
                     continue;
                 };
                 browsers.push((
-                    executable_path.to_lowercase(),
+                    argv[0].to_lowercase(),
                     Browser {
-                        display_name: application_name,
-                        launch_argv: vec![executable_path],
+                        id: program_id,
+                        display_name,
                     },
                 ));
             }
@@ -367,25 +389,32 @@ mod windows {
         browsers
     }
 
-    fn web_link_handler_executable(root: &RegKey, capabilities_path: &str) -> Option<String> {
-        let program_id = root
-            .open_subkey(format!("{capabilities_path}\\URLAssociations"))
-            .ok()?
-            .get_value::<String, _>("http")
-            .ok()?;
+    pub fn launch_argv(program_id: &str) -> Option<Vec<String>> {
         let command = RegKey::predef(HKEY_CLASSES_ROOT)
             .open_subkey(format!("{program_id}\\shell\\open\\command"))
             .ok()?
             .get_value::<String, _>("")
             .ok()?;
-        executable_from_shell_command(&command)
+        let command = command.trim();
+        let executable = match command.strip_prefix('"') {
+            Some(quoted) => quoted.split('"').next()?,
+            None => command.split_whitespace().next()?,
+        };
+        Some(vec![executable.to_owned()])
     }
 
-    fn executable_from_shell_command(command: &str) -> Option<String> {
-        let command = command.trim();
-        if let Some(quoted) = command.strip_prefix('"') {
-            return quoted.split('"').next().map(str::to_owned);
+    pub fn remembered_browser() -> Option<String> {
+        RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey(REMEMBERED_BROWSER_KEY)
+            .ok()?
+            .get_value("")
+            .ok()
+    }
+
+    fn remember(program_id: &str) {
+        if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(REMEMBERED_BROWSER_KEY)
+        {
+            let _ = key.set_value("", &program_id.to_owned());
         }
-        command.split_whitespace().next().map(str::to_owned)
     }
 }

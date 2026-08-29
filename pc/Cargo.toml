@@ -7,21 +7,15 @@ edition = "2024"
 name = "overbrowsered"
 path = "src/main.rs"
 
-[dependencies]
-confy = "2"
-image = { version = "0.25", default-features = false, features = ["png"] }
-serde = { version = "1", features = ["derive"] }
-tray-icon = "0.24"
-
 [target.'cfg(target_os = "linux")'.dependencies]
-async-channel = "2"
 atspi = "0.30"
 freedesktop-desktop-entry = "0.8"
 futures-lite = "2"
-gtk = "0.18"
+ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 zbus = "5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+tray-icon = "0.24"
 winreg = "0.56"
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-sys]

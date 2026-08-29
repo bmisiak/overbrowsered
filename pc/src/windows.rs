@@ -14,7 +14,8 @@ const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-44.icon");
 const ICON_FORMAT_VERSION: u32 = 0x0003_0000;
 const OUR_PROGRAM_ID: &str = "Overbrowsered.Url";
 const MOST_RECENT_BROWSER_KEY: &str = "Software\\Overbrowsered";
-const CAPABILITIES_KEY: &str = "Software\\Overbrowsered\\Capabilities";
+const BROWSER_CLIENT_KEY: &str = "Software\\Clients\\StartMenuInternet\\Overbrowsered";
+const CAPABILITIES_KEY: &str = "Software\\Clients\\StartMenuInternet\\Overbrowsered\\Capabilities";
 const WM_TRAY_ICON: co::WM = unsafe { co::WM::from_raw(0x8000 + 1) };
 const QUIT_MENU_ITEM: u16 = 1;
 const SET_DEFAULT_MENU_ITEM: u16 = 2;
@@ -34,20 +35,53 @@ pub fn report(error: &anyhow::Error) {
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let program_id =
-        load_most_recent_browser().context("Overbrowsered has yet to see you use a browser")?;
     let _com_alive_while_launching =
         w::CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE)?;
+    if let Some(program_id) = load_most_recent_browser() {
+        if launch(links, &program_id).is_ok() {
+            return Ok(());
+        }
+    }
+    let installed = installed_browsers();
+    let browser = topmost_browser(&installed)?.context(
+        "Overbrowsered could not find a browser to open this link.\n\n\
+         Focus any browser window once so it can learn which one you use, \
+         then try the link again.",
+    )?;
+    launch(links, &browser.program_id)?;
+    save_most_recent_browser(&browser.program_id)?;
+    Ok(())
+}
+
+fn launch(links: &[String], program_id: &str) -> Result<()> {
     for link in links {
         w::ShellExecuteEx(&w::SHELLEXECUTEINFO {
             file: link,
-            class: Some(&program_id),
+            class: Some(program_id),
             show: co::SW::SHOWNORMAL,
             ..Default::default()
         })
         .with_context(|| format!("opening {link} with {program_id}"))?;
     }
     Ok(())
+}
+
+fn topmost_browser(installed: &[Browser]) -> Result<Option<&Browser>> {
+    let mut topmost = None;
+    w::EnumWindows(|window: w::HWND| {
+        if topmost.is_none() && window.IsWindowVisible() {
+            topmost = browser_of_window(installed, &window);
+        }
+        true
+    })?;
+    Ok(topmost)
+}
+
+fn browser_of_window<'a>(installed: &'a [Browser], window: &w::HWND) -> Option<&'a Browser> {
+    let executable = executable_path_of_window(window)?;
+    installed
+        .iter()
+        .find(|browser| browser.executable_path == executable)
 }
 
 pub fn run() -> Result<()> {
@@ -104,15 +138,8 @@ impl Overbrowsered {
         }
     }
 
-    fn browser_of_window(&self, window: &w::HWND) -> Option<&Browser> {
-        let executable = executable_path_of_window(window)?;
-        self.installed
-            .iter()
-            .find(|browser| browser.executable_path == executable)
-    }
-
     fn foreground_changed(&self, window: &w::HWND) -> Option<()> {
-        let browser = self.browser_of_window(window)?;
+        let browser = browser_of_window(&self.installed, window)?;
         let mut most_recent = self.most_recent.borrow_mut();
         if most_recent.as_ref().map(|b| &b.program_id) == Some(&browser.program_id) {
             return None;
@@ -123,16 +150,9 @@ impl Overbrowsered {
     }
 
     fn remember_topmost_browser(&self) -> Result<()> {
-        let mut topmost = None;
-        w::EnumWindows(|window: w::HWND| {
-            if topmost.is_none() && window.IsWindowVisible() {
-                topmost = self.browser_of_window(&window).cloned();
-            }
-            true
-        })?;
-        if let Some(browser) = topmost {
+        if let Some(browser) = topmost_browser(&self.installed)? {
             save_most_recent_browser(&browser.program_id)?;
-            *self.most_recent.borrow_mut() = Some(browser);
+            *self.most_recent.borrow_mut() = Some(browser.clone());
         }
         Ok(())
     }
@@ -240,15 +260,32 @@ fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
 }
 
 fn show_menu(window: &w::HWND) -> Result<()> {
-    let browser_line = OVERBROWSERED.with(|overbrowsered| {
-        format!(
+    let (browser_line, default_line, we_are_default) = OVERBROWSERED.with(|overbrowsered| {
+        let browser_line = format!(
             "Most recently used browser: {}",
             overbrowsered
                 .most_recent
                 .borrow()
                 .as_ref()
                 .map_or(NO_BROWSER_SEEN_YET, |browser| &browser.display_name)
-        )
+        );
+        let default_handler = default_http_handler();
+        let we_are_default = default_handler.as_deref() == Some(OUR_PROGRAM_ID);
+        let default_line = if we_are_default {
+            "Default http handler: me 👌".to_owned()
+        } else {
+            let handler_name = default_handler
+                .as_ref()
+                .and_then(|id| {
+                    overbrowsered
+                        .installed
+                        .iter()
+                        .find(|browser| &browser.program_id == id)
+                })
+                .map_or("not me", |browser| &browser.display_name);
+            format!("Default http handler: {handler_name} ☹️")
+        };
+        (browser_line, default_line, we_are_default)
     });
     let mut menu = w::HMENU::CreatePopupMenu()?;
     let unclickable = co::MF::STRING | co::MF::DISABLED;
@@ -263,12 +300,21 @@ fn show_menu(window: &w::HWND) -> Result<()> {
         w::IdMenu::None,
         w::BmpPtrStr::from_str(&browser_line),
     )?;
-    menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
     menu.AppendMenu(
-        co::MF::STRING,
-        w::IdMenu::Id(SET_DEFAULT_MENU_ITEM),
-        w::BmpPtrStr::from_str("Set as default browser…"),
+        unclickable,
+        w::IdMenu::None,
+        w::BmpPtrStr::from_str(&default_line),
     )?;
+    if !we_are_default {
+        menu.AppendMenu(
+            co::MF::STRING,
+            w::IdMenu::Id(SET_DEFAULT_MENU_ITEM),
+            w::BmpPtrStr::from_str(
+                "⚠️ For Overbrowsered to work, click here to set it as the default \"browser\".",
+            ),
+        )?;
+    }
+    menu.AppendMenu(co::MF::SEPARATOR, w::IdMenu::None, w::BmpPtrStr::None)?;
     menu.AppendMenu(
         co::MF::STRING,
         w::IdMenu::Id(QUIT_MENU_ITEM),
@@ -373,6 +419,9 @@ fn command_executable(program_id: &str) -> Option<String> {
 }
 
 fn write_key(sub_key: &str, name: Option<&str>, value: &str) -> w::SysResult<()> {
+    if string_value(&w::HKEY::CURRENT_USER, Some(sub_key), name).as_deref() == Some(value) {
+        return Ok(());
+    }
     let (key, _) = w::HKEY::CURRENT_USER.RegCreateKeyEx(
         sub_key,
         None,
@@ -404,6 +453,17 @@ fn register_as_link_handler() -> Result<()> {
             None,
             default_icon.as_str(),
         ),
+        (BROWSER_CLIENT_KEY.to_owned(), None, "Overbrowsered"),
+        (
+            format!("{BROWSER_CLIENT_KEY}\\shell\\open\\command"),
+            None,
+            command.as_str(),
+        ),
+        (
+            format!("{BROWSER_CLIENT_KEY}\\DefaultIcon"),
+            None,
+            default_icon.as_str(),
+        ),
         (
             CAPABILITIES_KEY.to_owned(),
             Some("ApplicationName"),
@@ -413,6 +473,16 @@ fn register_as_link_handler() -> Result<()> {
             CAPABILITIES_KEY.to_owned(),
             Some("ApplicationDescription"),
             "Opens links in your most recently used browser",
+        ),
+        (
+            CAPABILITIES_KEY.to_owned(),
+            Some("ApplicationIcon"),
+            default_icon.as_str(),
+        ),
+        (
+            format!("{CAPABILITIES_KEY}\\Startmenu"),
+            Some("StartMenuInternet"),
+            "Overbrowsered",
         ),
         (
             format!("{CAPABILITIES_KEY}\\URLAssociations"),
@@ -425,6 +495,16 @@ fn register_as_link_handler() -> Result<()> {
             OUR_PROGRAM_ID,
         ),
         (
+            format!("{CAPABILITIES_KEY}\\FileAssociations"),
+            Some(".htm"),
+            OUR_PROGRAM_ID,
+        ),
+        (
+            format!("{CAPABILITIES_KEY}\\FileAssociations"),
+            Some(".html"),
+            OUR_PROGRAM_ID,
+        ),
+        (
             "Software\\RegisteredApplications".to_owned(),
             Some("Overbrowsered"),
             CAPABILITIES_KEY,
@@ -433,6 +513,22 @@ fn register_as_link_handler() -> Result<()> {
         write_key(&sub_key, name, value)?;
     }
     Ok(())
+}
+
+fn default_http_handler() -> Option<String> {
+    let associations = "Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http";
+    string_value(
+        &w::HKEY::CURRENT_USER,
+        Some(&format!("{associations}\\UserChoiceLatest\\ProgId")),
+        Some("ProgId"),
+    )
+    .or_else(|| {
+        string_value(
+            &w::HKEY::CURRENT_USER,
+            Some(&format!("{associations}\\UserChoice")),
+            Some("ProgId"),
+        )
+    })
 }
 
 fn load_most_recent_browser() -> Option<String> {

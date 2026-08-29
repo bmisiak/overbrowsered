@@ -16,16 +16,31 @@ const DESKTOP_FILE: &str = "overbrowsered.desktop";
 
 pub fn report(error: &anyhow::Error) {
     eprintln!("{error:#}");
+    let _notification_is_best_effort = Command::new("notify-send")
+        .args([
+            "--app-name=Overbrowsered",
+            "Overbrowsered",
+            &format!("{error:#}"),
+        ])
+        .spawn();
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let appid =
-        load_most_recent_browser().context("Overbrowsered has yet to see you use a browser")?;
+    let appid = load_most_recent_browser().context(
+        "Overbrowsered could not find a browser to open this link. \
+         Focus any browser window once so it can learn which one you use, \
+         then try the link again.",
+    )?;
     let locales = get_languages_from_env();
     let entry = desktop_entries(&locales)
         .into_iter()
         .find(|entry| entry.appid == appid)
-        .with_context(|| format!("{appid} is no longer installed"))?;
+        .with_context(|| {
+            format!(
+                "{appid} seems to be gone. Focus another browser window \
+                 so Overbrowsered can learn your new one, then try the link again."
+            )
+        })?;
     let links: Vec<&str> = links.iter().map(String::as_str).collect();
     let argv = entry
         .parse_exec_with_uris(&links, &locales)
@@ -143,7 +158,9 @@ impl Tray for Overbrowsered {
             }
             .into()
         };
-        vec![
+        let default_handler = default_browser_desktop_file();
+        let we_are_default = default_handler.as_deref() == Some(DESKTOP_FILE);
+        let mut items = vec![
             unclickable(AUTHOR_LINE.into()),
             MenuItem::Separator,
             unclickable(format!(
@@ -152,28 +169,53 @@ impl Tray for Overbrowsered {
                     .as_deref()
                     .unwrap_or(NO_BROWSER_SEEN_YET)
             )),
-            MenuItem::Separator,
-            StandardItem {
-                label: "Set as default browser".into(),
-                activate: Box::new(|_| {
-                    if let Err(error) = Command::new("xdg-settings")
-                        .args(["set", "default-web-browser", DESKTOP_FILE])
-                        .spawn()
-                    {
-                        eprintln!("cannot run xdg-settings: {error}");
-                    }
-                }),
-                ..Default::default()
-            }
-            .into(),
+            unclickable(if we_are_default {
+                "Default browser: me 👌".to_owned()
+            } else {
+                format!(
+                    "Default browser: {} ☹️",
+                    default_handler
+                        .as_deref()
+                        .map_or("not me", |file| file.trim_end_matches(".desktop"))
+                )
+            }),
+        ];
+        if !we_are_default {
+            items.push(
+                StandardItem {
+                    label: "⚠️ For Overbrowsered to work, click here to set it as the default \"browser\".".into(),
+                    activate: Box::new(|_| {
+                        if let Err(error) = Command::new("xdg-settings")
+                            .args(["set", "default-web-browser", DESKTOP_FILE])
+                            .spawn()
+                        {
+                            eprintln!("cannot run xdg-settings: {error}");
+                        }
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        items.push(MenuItem::Separator);
+        items.push(
             StandardItem {
                 label: "Quit".into(),
                 activate: Box::new(|_| std::process::exit(0)),
                 ..Default::default()
             }
             .into(),
-        ]
+        );
+        items
     }
+}
+
+fn default_browser_desktop_file() -> Option<String> {
+    let output = Command::new("xdg-settings")
+        .args(["get", "default-web-browser"])
+        .output()
+        .ok()?;
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()).filter(|file| !file.is_empty())
 }
 
 fn recognize_process(pid: u32) -> Option<RecognizedBy> {

@@ -13,7 +13,7 @@ https://github.com/user-attachments/assets/aabe43eb-f4c9-4311-8da1-1a6f8e7c2ab3
 ## Downloads
 
 - [GitHub Releases](https://github.com/bmisiak/overbrowsered/releases)
-- [Mac App Store](https://apps.apple.com/us/app/overbrowsered/id1557121701?mt=12)
+- [Mac App Store](https://apps.apple.com/app/apple-store/id1557121701?pt=121866206&ct=gh&mt=8)
 - Microsoft Store release pending certification
 
 Direct Windows releases are built from this public repository with GitHub Actions. Free code signing provided by SignPath.io, certificate by SignPath Foundation. See the [code signing policy](CODE_SIGNING.md).

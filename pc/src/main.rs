@@ -18,11 +18,8 @@ const NO_BROWSER_ADVICE: &str = "Overbrowsered could not find a browser to open 
      Focus any browser window once so it can learn which one you use, \
      then try the link again.";
 
-fn most_recent_browser_line(display_name: Option<String>) -> String {
-    format!(
-        "Most recently used browser: {}",
-        display_name.as_deref().unwrap_or("none detected yet")
-    )
+fn most_recent_browser_line(display_name: Option<&str>) -> String {
+    format!("Most recently used browser: {}", display_name.unwrap_or("none detected yet"))
 }
 
 fn default_handler_line(we_are_default: bool, handler_name: Option<&str>) -> String {

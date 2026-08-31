@@ -12,8 +12,7 @@ use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateIconFromResourceEx, EVENT_SYSTEM_FOREGROUND, LR_DEFAULTCOLOR, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS,
+    EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 use winsafe::prelude::Handle;
 use winsafe::{self as w, co};
@@ -113,7 +112,7 @@ pub fn run() -> Result<()> {
     if hook.is_null() {
         bail!("cannot watch for foreground window changes");
     }
-    OVERBROWSERED.with(|overbrowsered| overbrowsered.remember_topmost_browser())?;
+    OVERBROWSERED.with(Overbrowsered::remember_topmost_browser)?;
 
     let mut message = w::MSG::default();
     while w::GetMessage(&mut message, None, 0, 0)? {
@@ -293,12 +292,13 @@ fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
 
 fn show_menu(window: &w::HWND) -> Result<()> {
     let (browser_line, default_line, we_are_default) = OVERBROWSERED.with(|overbrowsered| {
-        let most_recent = overbrowsered.most_recent_browser_id.borrow().as_deref().map(|id| {
+        let most_recent_browser_id = overbrowsered.most_recent_browser_id.borrow();
+        let most_recent = most_recent_browser_id.as_deref().map(|id| {
             overbrowsered
                 .installed
                 .iter()
                 .find(|browser| browser.program_id == id)
-                .map_or_else(|| id.to_owned(), |browser| browser.display_name.clone())
+                .map_or(id, |browser| browser.display_name.as_str())
         });
         let browser_line = most_recent_browser_line(most_recent);
         let default_handler = default_http_handler();

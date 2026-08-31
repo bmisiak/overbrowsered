@@ -533,6 +533,7 @@ dependencies = [
  "windows-sys",
  "winresource",
  "winsafe",
+ "xdg",
  "zbus",
 ]
 

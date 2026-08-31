@@ -9,9 +9,9 @@ use freedesktop_desktop_entry::{desktop_entries, get_languages_from_env};
 use futures_lite::StreamExt;
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Tray, TrayMethods};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::sync::RwLock;
+use xdg::BaseDirectories;
 use zbus::fdo::DBusProxy;
 use zbus::names::BusName;
 
@@ -61,19 +61,9 @@ pub fn run() -> Result<()> {
     })
 }
 
-fn most_recent_browser_id() -> Option<String> {
-    MOST_RECENT_BROWSER_ID.read().expect("no lock holder panics").clone()
-}
-
-fn set_most_recent_browser_id(appid: String) {
-    *MOST_RECENT_BROWSER_ID.write().expect("no lock holder panics") = Some(appid);
-}
-
 async fn watch_focused_windows_for_browsers() -> Result<()> {
     let installed = installed_browsers();
-    if let Some(appid) = load_most_recent_browser_id() {
-        set_most_recent_browser_id(appid);
-    }
+    let mut most_recent_browser_id = load_most_recent_browser_id();
     let accessibility =
         AccessibilityConnection::new().await.context("connecting to the accessibility bus")?;
     accessibility.register_event::<ActivateEvent>().await?;
@@ -98,13 +88,13 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
         else {
             continue;
         };
-        if most_recent_browser_id().as_deref() == Some(browser.appid.as_str()) {
+        if most_recent_browser_id.as_deref() == Some(browser.appid.as_str()) {
             continue;
         }
         if let Err(error) = save_most_recent_browser_id(&browser.appid) {
             eprintln!("cannot save most recent browser {}: {error:#}", browser.appid);
         }
-        set_most_recent_browser_id(browser.appid.clone());
+        most_recent_browser_id = Some(browser.appid.clone());
     }
     bail!("the accessibility event stream ended")
 }
@@ -121,8 +111,6 @@ struct Browser {
     recognized_by: RecognizedBy,
 }
 
-static MOST_RECENT_BROWSER_ID: RwLock<Option<String>> = RwLock::new(None);
-
 struct Overbrowsered;
 
 impl Tray for Overbrowsered {
@@ -137,7 +125,7 @@ impl Tray for Overbrowsered {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let unclickable =
             |label: String| StandardItem { label, enabled: false, ..Default::default() }.into();
-        let most_recent = most_recent_browser_id().map(|appid| {
+        let most_recent = load_most_recent_browser_id().map(|appid| {
             installed_browsers()
                 .into_iter()
                 .find(|browser| browser.appid == appid)
@@ -148,7 +136,7 @@ impl Tray for Overbrowsered {
         let mut items = vec![
             unclickable(AUTHOR_LINE.into()),
             MenuItem::Separator,
-            unclickable(most_recent_browser_line(most_recent)),
+            unclickable(most_recent_browser_line(most_recent.as_deref())),
             unclickable(default_handler_line(
                 we_are_default,
                 default_handler.as_deref().map(|file| file.trim_end_matches(".desktop")),
@@ -228,7 +216,8 @@ fn installed_browsers() -> Vec<Browser> {
 
 fn register_as_link_handler() -> Result<()> {
     let executable = std::env::current_exe()?;
-    let directory = xdg_directory("XDG_DATA_HOME", ".local/share")?.join("applications");
+    let directory =
+        BaseDirectories::new().get_data_home().context("HOME is unset")?.join("applications");
     let entry = format!(
         "[Desktop Entry]\nType=Application\nName=Overbrowsered\nComment={APP_DESCRIPTION}\nExec={} %u\nIcon=overbrowsered\nTerminal=false\nStartupNotify=false\nCategories=Network;WebBrowser;\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n",
         executable.display()
@@ -245,26 +234,14 @@ fn register_as_link_handler() -> Result<()> {
     Ok(())
 }
 
-fn xdg_directory(variable: &str, home_fallback: &str) -> Result<PathBuf> {
-    if let Ok(directory) = std::env::var(variable) {
-        return Ok(PathBuf::from(directory));
-    }
-    let home = std::env::var("HOME").context("HOME is unset")?;
-    Ok(Path::new(&home).join(home_fallback))
-}
-
-fn config_directory() -> Result<PathBuf> {
-    Ok(xdg_directory("XDG_CONFIG_HOME", ".config")?.join("overbrowsered"))
-}
-
 fn load_most_recent_browser_id() -> Option<String> {
-    let appid = std::fs::read_to_string(config_directory().ok()?.join("browser")).ok()?;
+    let path = BaseDirectories::with_prefix("overbrowsered").get_config_file("browser")?;
+    let appid = std::fs::read_to_string(path).ok()?;
     Some(appid.trim().to_owned())
 }
 
 fn save_most_recent_browser_id(appid: &str) -> Result<()> {
-    let directory = config_directory()?;
-    std::fs::create_dir_all(&directory)?;
-    std::fs::write(directory.join("browser"), appid)?;
+    let path = BaseDirectories::with_prefix("overbrowsered").place_config_file("browser")?;
+    std::fs::write(path, appid)?;
     Ok(())
 }

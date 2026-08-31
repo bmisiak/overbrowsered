@@ -59,7 +59,7 @@
       uap10:RuntimeBehavior="packagedClassicApp"
       uap10:TrustLevel="mediumIL">
       <uap7:Properties>
-        <uap8:activeCodePage>UTF-8</uap8:activeCodePage>
+        <uap8:ActiveCodePage>UTF-8</uap8:ActiveCodePage>
       </uap7:Properties>
 
       <uap:VisualElements

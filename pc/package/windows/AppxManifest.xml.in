@@ -5,8 +5,10 @@
   xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap7="http://schemas.microsoft.com/appx/manifest/uap/windows10/7"
+  xmlns:uap8="http://schemas.microsoft.com/appx/manifest/uap/windows10/8"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
-  IgnorableNamespaces="desktop desktop6 rescap uap uap10">
+  IgnorableNamespaces="desktop desktop6 rescap uap uap7 uap8 uap10">
 
   <!--
     Identity Name and Publisher must exactly match the values assigned by
@@ -56,6 +58,10 @@
       EntryPoint="Windows.FullTrustApplication"
       uap10:RuntimeBehavior="packagedClassicApp"
       uap10:TrustLevel="mediumIL">
+      <uap7:Properties>
+        <uap8:activeCodePage>UTF-8</uap8:activeCodePage>
+      </uap7:Properties>
+
       <uap:VisualElements
         DisplayName="Overbrowsered"
         Description="Opens links in your most recently used browser"

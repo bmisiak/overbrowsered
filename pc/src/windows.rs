@@ -4,6 +4,11 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use std::cell::RefCell;
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+use windows_sys::Win32::System::Recovery::{
+    RESTART_NO_CRASH, RESTART_NO_HANG, RegisterApplicationRestart,
+};
+use windows_sys::Win32::System::Threading::CreateMutexW;
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows_sys::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -86,6 +91,10 @@ fn browser_of_window<'a>(installed: &'a [Browser], window: &w::HWND) -> Option<&
 }
 
 pub fn run() -> Result<()> {
+    let Some(_singleton_handle) = ensure_only_one_app_instance()? else {
+        return Ok(());
+    };
+    register_for_autorestart().context("registering for restart")?;
     register_as_link_handler().context("registering as a browser")?;
     let window = create_window().context("creating the tray window")?;
     let icon = tray_icon(&window)?;
@@ -111,6 +120,40 @@ pub fn run() -> Result<()> {
         unsafe { w::DispatchMessage(&message) };
     }
     w::Shell_NotifyIcon(co::NIM::DELETE, &icon)?;
+    Ok(())
+}
+
+struct SingletonAppInstanceHandle(HANDLE);
+
+impl Drop for SingletonAppInstanceHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+fn ensure_only_one_app_instance() -> Result<Option<SingletonAppInstanceHandle>> {
+    let handle =
+        unsafe { CreateMutexW(std::ptr::null(), 0, windows_sys::w!("Local\\Overbrowsered.Tray")) };
+    let last_error = unsafe { GetLastError() };
+    if handle.is_null() {
+        return Err(std::io::Error::from_raw_os_error(last_error as i32))
+            .context("creating tray instance mutex");
+    }
+    let mutex = SingletonAppInstanceHandle(handle);
+    if last_error == ERROR_ALREADY_EXISTS {
+        return Ok(None);
+    }
+    Ok(Some(mutex))
+}
+
+fn register_for_autorestart() -> Result<()> {
+    let result =
+        unsafe { RegisterApplicationRestart(std::ptr::null(), RESTART_NO_CRASH | RESTART_NO_HANG) };
+    if result < 0 {
+        bail!("RegisterApplicationRestart failed with HRESULT {:#010x}", result as u32);
+    }
     Ok(())
 }
 

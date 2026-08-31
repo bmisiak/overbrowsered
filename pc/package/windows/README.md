@@ -84,4 +84,3 @@ Unvirtualized registry values persist after package removal. A future release
 should add an explicit package-removal cleanup path if Windows exposes a reliable
 hook suitable for Store applications. Do not add a manifest `windows.protocol`
 fallback for `http` or `https`; Windows silently ignores those reserved schemes.
-

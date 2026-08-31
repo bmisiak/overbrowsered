@@ -17,8 +17,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use winsafe::prelude::Handle;
 use winsafe::{self as w, co};
 
-const TRAY_ICON: &[u8] = include_bytes!("../icons/tray-44.icon");
-const ICON_FORMAT_VERSION: u32 = 0x0003_0000;
 const OUR_PROGRAM_ID: &str = "Overbrowsered.Url";
 const MOST_RECENT_BROWSER_KEY: &str = "Software\\Overbrowsered";
 const BROWSER_CLIENT_KEY: &str = "Software\\Clients\\StartMenuInternet\\Overbrowsered";
@@ -266,26 +264,12 @@ fn restore_tray_icon(window: &w::HWND) -> Result<()> {
 }
 
 fn tray_icon(window: &w::HWND) -> Result<w::NOTIFYICONDATA> {
-    let icon = unsafe {
-        CreateIconFromResourceEx(
-            TRAY_ICON.as_ptr(),
-            TRAY_ICON.len() as u32,
-            1,
-            ICON_FORMAT_VERSION,
-            0,
-            0,
-            LR_DEFAULTCOLOR,
-        )
-    };
-    if icon.is_null() {
-        bail!("cannot decode the tray icon");
-    }
     let mut data = w::NOTIFYICONDATA::default();
     data.hWnd = unsafe { window.raw_copy() };
     data.uID = 1;
     data.uFlags = co::NIF::ICON | co::NIF::MESSAGE | co::NIF::TIP;
     data.uCallbackMessage = WM_TRAY_ICON;
-    data.hIcon = unsafe { w::HICON::from_ptr(icon) };
+    data.hIcon = w::HINSTANCE::GetModuleHandle(None)?.LoadIcon(w::IdIdiStr::Id(2))?.leak();
     data.set_szTip("Overbrowsered");
     Ok(data)
 }

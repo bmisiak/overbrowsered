@@ -1,0 +1,45 @@
+name: macOS verification
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/macos-ci.yml
+      - Overbrowsered.xcodeproj/**
+      - Overbrowsered/**
+  pull_request:
+    paths:
+      - .github/workflows/macos-ci.yml
+      - Overbrowsered.xcodeproj/**
+      - Overbrowsered/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build unsigned app
+    runs-on: macos-26
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project Overbrowsered.xcodeproj \
+            -scheme Overbrowsered \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Analyze
+        run: |
+          xcodebuild analyze \
+            -project Overbrowsered.xcodeproj \
+            -scheme Overbrowsered \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO

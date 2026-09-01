@@ -1,0 +1,37 @@
+name: Rust verification
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/rust-ci.yml
+      - pc/**
+  pull_request:
+    paths:
+      - .github/workflows/rust-ci.yml
+      - pc/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path pc/Cargo.toml -- --check
+
+      - name: Check
+        run: cargo check --manifest-path pc/Cargo.toml --all-targets
+
+      - name: Test
+        run: cargo test --manifest-path pc/Cargo.toml

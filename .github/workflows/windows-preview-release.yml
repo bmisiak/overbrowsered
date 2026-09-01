@@ -6,25 +6,19 @@ on:
       package_version:
         description: Four-part Windows package version
         required: true
-        default: 0.1.0.0
         type: string
       release_tag:
         description: GitHub prerelease tag
         required: true
-        default: windows-v0.1.0-preview
         type: string
-  push:
-    branches: [master]
-    paths:
-      - .github/workflows/windows-preview-release.yml
 
 permissions:
   contents: write
 
 env:
   CARGO_TERM_COLOR: always
-  PACKAGE_VERSION: ${{ inputs.package_version || '0.1.0.0' }}
-  RELEASE_TAG: ${{ inputs.release_tag || 'windows-v0.1.0-preview' }}
+  PACKAGE_VERSION: ${{ inputs.package_version }}
+  RELEASE_TAG: ${{ inputs.release_tag }}
 
 jobs:
   build:
@@ -146,7 +140,7 @@ jobs:
         shell: pwsh
         run: |
           @"
-          This is the first public Windows preview of Overbrowsered.
+          This is a Windows preview build of Overbrowsered $env:PACKAGE_VERSION.
 
           **These Windows files are currently unsigned.** Windows SmartScreen may warn before running the portable executables. The MSIX bundle uses the Microsoft Store package identity and is not intended for ordinary sideload installation until a separately signed direct-distribution bundle is available.
 
@@ -172,14 +166,14 @@ jobs:
           if (gh release view $env:RELEASE_TAG --repo '${{ github.repository }}' 2>$null) {
             gh release upload $env:RELEASE_TAG $assets --clobber --repo '${{ github.repository }}'
             gh release edit $env:RELEASE_TAG `
-              --title 'Overbrowsered for Windows 0.1.0 preview' `
+              --title "Overbrowsered for Windows $env:PACKAGE_VERSION preview" `
               --notes-file release-notes.md `
               --prerelease `
               --repo '${{ github.repository }}'
           } else {
             gh release create $env:RELEASE_TAG $assets `
               --target '${{ github.sha }}' `
-              --title 'Overbrowsered for Windows 0.1.0 preview' `
+              --title "Overbrowsered for Windows $env:PACKAGE_VERSION preview" `
               --notes-file release-notes.md `
               --prerelease `
               --repo '${{ github.repository }}'

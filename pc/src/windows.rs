@@ -101,7 +101,7 @@ pub fn run() -> Result<()> {
     register_for_autorestart().context("registering for restart")?;
     register_as_link_handler().context("registering as a browser")?;
     let window = create_window().context("creating the tray window")?;
-    let icon = tray_icon(&window)?;
+    let icon = tray_icon(window)?;
     Shell_NotifyIcon(co::NIM::ADD, &icon).context("adding the tray icon")?;
     let hook = unsafe {
         SetWinEventHook(
@@ -256,7 +256,7 @@ extern "system" fn window_proc(
         return 0;
     }
     if RegisterWindowMessage("TaskbarCreated") == Ok(message.raw()) {
-        if let Err(error) = restore_tray_icon(&window) {
+        if let Err(error) = restore_tray_icon(window) {
             report(&error);
         }
         return 0;
@@ -264,13 +264,13 @@ extern "system" fn window_proc(
     unsafe { window.DefWindowProc(msg::Wm { msg_id: message, wparam, lparam }) }
 }
 
-fn restore_tray_icon(window: &HWND) -> Result<()> {
+fn restore_tray_icon(window: HWND) -> Result<()> {
     Shell_NotifyIcon(co::NIM::ADD, &tray_icon(window)?).context("re-adding the tray icon")
 }
 
-fn tray_icon(window: &HWND) -> Result<NOTIFYICONDATA> {
+fn tray_icon(window: HWND) -> Result<NOTIFYICONDATA> {
     let mut data = NOTIFYICONDATA::default();
-    data.hWnd = unsafe { window.raw_copy() };
+    data.hWnd = window;
     data.uID = 1;
     data.uFlags = co::NIF::ICON | co::NIF::MESSAGE | co::NIF::TIP;
     data.uCallbackMessage = WM_TRAY_ICON;

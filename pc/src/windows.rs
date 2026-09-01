@@ -21,31 +21,30 @@ use windows_sys::Win32::{
     },
 };
 use windows_sys::w;
-use winsafe::{co, prelude::*, *};
+use winsafe::co::{COINIT, ERROR, MB, MF, NIF, NIM, PROCESS, PROCESS_NAME, SW, TPM, WM, WS, WS_EX};
+use winsafe::{prelude::*, *};
 
 const OUR_PROGRAM_ID: &str = "Overbrowsered.Url";
 const SETTINGS_KEY: &str = r"Software\Overbrowsered";
 const MOST_RECENT_BROWSER: &str = "MostRecentBrowser";
-const BROWSER_CLIENT_KEY: &str = r"Software\Clients\StartMenuInternet\Overbrowsered";
-const CAPABILITIES_KEY: &str = r"Software\Clients\StartMenuInternet\Overbrowsered\Capabilities";
-const WM_TRAY_ICON: co::WM = co::WM::APP;
+const WM_TRAY_ICON: WM = WM::APP;
 const QUIT_MENU_ITEM: u16 = 1;
 const SET_DEFAULT_MENU_ITEM: u16 = 2;
 
 thread_local! {
-    static OVERBROWSERED: Overbrowsered = Overbrowsered::new();
+    static STATE: State = State::new();
 }
 
 pub fn report(error: &anyhow::Error) {
     let text = format!("{error:#}");
-    if HWND::NULL.MessageBox(&text, "Overbrowsered", co::MB::ICONERROR).is_err() {
+    if HWND::NULL.MessageBox(&text, "Overbrowsered", MB::ICONERROR).is_err() {
         eprintln!("{text}");
     }
 }
 
 pub fn open(links: &[String]) -> Result<()> {
     let _com_alive_while_launching =
-        CoInitializeEx(co::COINIT::APARTMENTTHREADED | co::COINIT::DISABLE_OLE1DDE)?;
+        CoInitializeEx(COINIT::APARTMENTTHREADED | COINIT::DISABLE_OLE1DDE)?;
     let most_recent_failure = match load_most_recent_browser_id() {
         Some(program_id) => match launch(links, &program_id) {
             Ok(()) => return Ok(()),
@@ -70,7 +69,7 @@ fn launch(links: &[String], program_id: &str) -> Result<()> {
         ShellExecuteEx(&SHELLEXECUTEINFO {
             file: link,
             class: Some(program_id),
-            show: co::SW::SHOWNORMAL,
+            show: SW::SHOWNORMAL,
             ..Default::default()
         })
         .with_context(|| format!("opening {link} with {program_id}"))?;
@@ -90,7 +89,7 @@ fn topmost_browser(installed: &[Browser]) -> Result<Option<&Browser>> {
 }
 
 fn browser_of_window<'a>(installed: &'a [Browser], window: &HWND) -> Option<&'a Browser> {
-    let executable = executable_path_of_window(window)?;
+    let executable = executable_path_of_window(window).ok()?;
     installed.iter().find(|browser| browser.executable_path == executable)
 }
 
@@ -102,7 +101,7 @@ pub fn run() -> Result<()> {
     register_as_link_handler().context("registering as a browser")?;
     let window = create_window().context("creating the tray window")?;
     let icon = tray_icon(window)?;
-    Shell_NotifyIcon(co::NIM::ADD, &icon).context("adding the tray icon")?;
+    Shell_NotifyIcon(NIM::ADD, &icon).context("adding the tray icon")?;
     // SAFETY: The static callback has the required ABI; OUTOFCONTEXT requires a null module.
     let hook = unsafe {
         SetWinEventHook(
@@ -118,14 +117,14 @@ pub fn run() -> Result<()> {
     if hook.is_null() {
         bail!("cannot watch for foreground window changes");
     }
-    OVERBROWSERED.with(Overbrowsered::remember_topmost_browser)?;
+    STATE.with(State::remember_topmost_browser)?;
 
     let mut message = MSG::default();
     while GetMessage(&mut message, None, 0, 0)? {
         // SAFETY: GetMessage initialized this message for dispatch.
         unsafe { DispatchMessage(&message) };
     }
-    Shell_NotifyIcon(co::NIM::DELETE, &icon)?;
+    Shell_NotifyIcon(NIM::DELETE, &icon)?;
     Ok(())
 }
 
@@ -138,7 +137,7 @@ fn ensure_only_one_app_instance() -> Result<Option<OwnedHandle>> {
     let mutex = OwnedHandle::try_from(mutex)
         .map_err(|_| last_error)
         .context("creating tray instance mutex")?;
-    Ok((last_error != co::ERROR::ALREADY_EXISTS).then_some(mutex))
+    Ok((last_error != ERROR::ALREADY_EXISTS).then_some(mutex))
 }
 
 fn register_for_autorestart() -> Result<()> {
@@ -157,21 +156,21 @@ struct Browser {
     executable_path: String,
 }
 
-struct Overbrowsered {
-    installed: Vec<Browser>,
+struct State {
+    installed_browsers: Vec<Browser>,
     most_recent_browser_id: RefCell<Option<String>>,
 }
 
-impl Overbrowsered {
+impl State {
     fn new() -> Self {
         Self {
             most_recent_browser_id: RefCell::new(load_most_recent_browser_id()),
-            installed: installed_browsers(),
+            installed_browsers: installed_browsers(),
         }
     }
 
     fn foreground_changed(&self, window: &HWND) -> Option<()> {
-        let browser = browser_of_window(&self.installed, window)?;
+        let browser = browser_of_window(&self.installed_browsers, window)?;
         let mut most_recent_browser_id = self.most_recent_browser_id.borrow_mut();
         if most_recent_browser_id.as_deref() == Some(browser.program_id.as_str()) {
             return None;
@@ -182,7 +181,7 @@ impl Overbrowsered {
     }
 
     fn remember_topmost_browser(&self) -> Result<()> {
-        if let Some(browser) = topmost_browser(&self.installed)? {
+        if let Some(browser) = topmost_browser(&self.installed_browsers)? {
             save_most_recent_browser_id(&browser.program_id)?;
             *self.most_recent_browser_id.borrow_mut() = Some(browser.program_id.clone());
         }
@@ -201,7 +200,7 @@ unsafe extern "system" fn foreground_window_changed(
 ) {
     // SAFETY: EVENT_SYSTEM_FOREGROUND supplies the borrowed foreground HWND.
     let window = unsafe { HWND::from_ptr(window) };
-    OVERBROWSERED.with(|overbrowsered| overbrowsered.foreground_changed(&window));
+    STATE.with(|state| state.foreground_changed(&window));
 }
 
 fn create_window() -> Result<HWND> {
@@ -210,16 +209,16 @@ fn create_window() -> Result<HWND> {
     class.lpfnWndProc = Some(window_proc);
     class.hInstance = HINSTANCE::GetModuleHandle(None)?;
     class.set_lpszClassName(Some(&mut class_name));
-    SetLastError(co::ERROR::SUCCESS);
+    SetLastError(ERROR::SUCCESS);
 
     // SAFETY: The class name outlives registration, the procedure is static, and atom/instance match.
     let window = unsafe {
         let atom = RegisterClassEx(&class)?;
         HWND::CreateWindowEx(
-            co::WS_EX::NoValue,
+            WS_EX::NoValue,
             AtomStr::Atom(atom),
             None,
-            co::WS::NoValue,
+            WS::NoValue,
             POINT::default(),
             SIZE::default(),
             None,
@@ -231,22 +230,17 @@ fn create_window() -> Result<HWND> {
     Ok(window)
 }
 
-extern "system" fn window_proc(
-    window: HWND,
-    message: co::WM,
-    wparam: usize,
-    lparam: isize,
-) -> isize {
+extern "system" fn window_proc(window: HWND, message: WM, wparam: usize, lparam: isize) -> isize {
     if message == WM_TRAY_ICON {
         let click = lparam as u32;
-        if (click == co::WM::LBUTTONUP.raw() || click == co::WM::RBUTTONUP.raw())
+        if (click == WM::LBUTTONUP.raw() || click == WM::RBUTTONUP.raw())
             && let Err(error) = show_menu(&window)
         {
             report(&error);
         }
         return 0;
     }
-    if message == co::WM::DESTROY {
+    if message == WM::DESTROY {
         PostQuitMessage(0);
         return 0;
     }
@@ -261,14 +255,14 @@ extern "system" fn window_proc(
 }
 
 fn restore_tray_icon(window: HWND) -> Result<()> {
-    Shell_NotifyIcon(co::NIM::ADD, &tray_icon(window)?).context("re-adding the tray icon")
+    Shell_NotifyIcon(NIM::ADD, &tray_icon(window)?).context("re-adding the tray icon")
 }
 
 fn tray_icon(window: HWND) -> Result<NOTIFYICONDATA> {
     let mut data = NOTIFYICONDATA::default();
     data.hWnd = window;
     data.uID = 1;
-    data.uFlags = co::NIF::ICON | co::NIF::MESSAGE | co::NIF::TIP;
+    data.uFlags = NIF::ICON | NIF::MESSAGE | NIF::TIP;
     data.uCallbackMessage = WM_TRAY_ICON;
     data.hIcon = HINSTANCE::GetModuleHandle(None)?.LoadIcon(IdIdiStr::Id(2))?.leak();
     data.set_szTip("Overbrowsered");
@@ -276,20 +270,20 @@ fn tray_icon(window: HWND) -> Result<NOTIFYICONDATA> {
 }
 
 fn show_menu(window: &HWND) -> Result<()> {
-    let (browser_line, default_line, we_are_default) = OVERBROWSERED.with(|overbrowsered| {
-        let most_recent_browser_id = overbrowsered.most_recent_browser_id.borrow();
-        let most_recent = most_recent_browser_id.as_deref().map(|id| {
-            overbrowsered
-                .installed
+    let (browser_line, default_line, we_are_default) = STATE.with(|state| {
+        let most_recent_browser_id = state.most_recent_browser_id.borrow();
+        let most_recent_browser_name = most_recent_browser_id.as_deref().map(|id| {
+            state
+                .installed_browsers
                 .iter()
                 .find(|browser| browser.program_id == id)
                 .map_or(id, |browser| browser.display_name.as_str())
         });
-        let browser_line = most_recent_browser_line(most_recent);
+        let browser_line = most_recent_browser_line(most_recent_browser_name);
         let default_handler = default_http_handler();
         let we_are_default = default_handler.as_deref() == Some(OUR_PROGRAM_ID);
         let handler_name = default_handler.as_ref().and_then(|id| {
-            overbrowsered.installed.iter().find(|browser| &browser.program_id == id)
+            state.installed_browsers.iter().find(|browser| &browser.program_id == id)
         });
         let default_line = default_handler_line(
             we_are_default,
@@ -298,24 +292,24 @@ fn show_menu(window: &HWND) -> Result<()> {
         (browser_line, default_line, we_are_default)
     });
     let mut menu = HMENU::CreatePopupMenu()?;
-    let unclickable = co::MF::STRING | co::MF::DISABLED;
+    let unclickable = MF::STRING | MF::DISABLED;
     menu.AppendMenu(unclickable, IdMenu::None, BmpPtrStr::from_str(AUTHOR_LINE))?;
-    menu.AppendMenu(co::MF::SEPARATOR, IdMenu::None, BmpPtrStr::None)?;
+    menu.AppendMenu(MF::SEPARATOR, IdMenu::None, BmpPtrStr::None)?;
     menu.AppendMenu(unclickable, IdMenu::None, BmpPtrStr::from_str(&browser_line))?;
     menu.AppendMenu(unclickable, IdMenu::None, BmpPtrStr::from_str(&default_line))?;
     if !we_are_default {
         menu.AppendMenu(
-            co::MF::STRING,
+            MF::STRING,
             IdMenu::Id(SET_DEFAULT_MENU_ITEM),
             BmpPtrStr::from_str(SET_DEFAULT_PROMPT),
         )?;
     }
-    menu.AppendMenu(co::MF::SEPARATOR, IdMenu::None, BmpPtrStr::None)?;
-    menu.AppendMenu(co::MF::STRING, IdMenu::Id(QUIT_MENU_ITEM), BmpPtrStr::from_str("Quit"))?;
+    menu.AppendMenu(MF::SEPARATOR, IdMenu::None, BmpPtrStr::None)?;
+    menu.AppendMenu(MF::STRING, IdMenu::Id(QUIT_MENU_ITEM), BmpPtrStr::from_str("Quit"))?;
 
     let cursor = GetCursorPos()?;
     window.SetForegroundWindow();
-    let chosen = menu.TrackPopupMenu(co::TPM::RETURNCMD, cursor, window)?;
+    let chosen = menu.TrackPopupMenu(TPM::RETURNCMD, cursor, window)?;
     menu.DestroyMenu()?;
     if chosen == Some(QUIT_MENU_ITEM as i32) {
         PostQuitMessage(0);
@@ -331,19 +325,18 @@ fn open_default_apps_settings() -> Result<()> {
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, ptr::null(), ptr::null()) };
     ShellExecuteEx(&SHELLEXECUTEINFO {
         file: "ms-settings:defaultapps?registeredAppUser=Overbrowsered",
-        show: co::SW::SHOWNORMAL,
+        show: SW::SHOWNORMAL,
         ..Default::default()
     })
     .context("opening the default apps settings")?;
     Ok(())
 }
 
-fn executable_path_of_window(window: &HWND) -> Option<String> {
+fn executable_path_of_window(window: &HWND) -> SysResult<String> {
     let (_thread, process) = window.GetWindowThreadProcessId();
-    let handle =
-        HPROCESS::OpenProcess(co::PROCESS::QUERY_LIMITED_INFORMATION, false, process).ok()?;
-    let path = handle.QueryFullProcessImageName(co::PROCESS_NAME::WIN32).ok()?;
-    Some(path.to_lowercase())
+    let handle = HPROCESS::OpenProcess(PROCESS::QUERY_LIMITED_INFORMATION, false, process)?;
+    let path = handle.QueryFullProcessImageName(PROCESS_NAME::WIN32)?;
+    Ok(path.to_lowercase())
 }
 
 fn installed_browsers() -> Vec<Browser> {
@@ -403,7 +396,7 @@ fn register_as_link_handler() -> Result<()> {
     class.create(r"shell\open\command")?.set_hstring("", &command)?;
     class.create("DefaultIcon")?.set_hstring("", &icon)?;
 
-    let client = CURRENT_USER.create(BROWSER_CLIENT_KEY)?;
+    let client = CURRENT_USER.create(r"Software\Clients\StartMenuInternet\Overbrowsered")?;
     client.set_string("", "Overbrowsered")?;
     client.create(r"shell\open\command")?.set_hstring("", &command)?;
     client.create("DefaultIcon")?.set_hstring("", &icon)?;
@@ -423,7 +416,10 @@ fn register_as_link_handler() -> Result<()> {
     files.set_string(".html", OUR_PROGRAM_ID)?;
 
     let registered = CURRENT_USER.create(r"Software\RegisteredApplications")?;
-    registered.set_string("Overbrowsered", CAPABILITIES_KEY)?;
+    registered.set_string(
+        "Overbrowsered",
+        r"Software\Clients\StartMenuInternet\Overbrowsered\Capabilities",
+    )?;
     Ok(())
 }
 

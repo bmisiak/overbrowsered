@@ -4,10 +4,10 @@ use crate::{
 };
 use anyhow::{Context, Result, anyhow, bail};
 use std::ffi::{OsString, c_void};
-use std::{cell::RefCell, env, io, path::Path, ptr};
+use std::os::windows::io::{HandleOrNull, OwnedHandle};
+use std::{cell::RefCell, env, path::Path, ptr};
 use windows_registry::{CLASSES_ROOT, CURRENT_USER, HSTRING, LOCAL_MACHINE};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
     System::{
         Recovery::{RESTART_NO_CRASH, RESTART_NO_HANG, RegisterApplicationRestart},
         Threading::CreateMutexW,
@@ -28,7 +28,7 @@ const SETTINGS_KEY: &str = r"Software\Overbrowsered";
 const MOST_RECENT_BROWSER: &str = "MostRecentBrowser";
 const BROWSER_CLIENT_KEY: &str = r"Software\Clients\StartMenuInternet\Overbrowsered";
 const CAPABILITIES_KEY: &str = r"Software\Clients\StartMenuInternet\Overbrowsered\Capabilities";
-const WM_TRAY_ICON: co::WM = unsafe { co::WM::from_raw(0x8000 + 1) };
+const WM_TRAY_ICON: co::WM = co::WM::APP;
 const QUIT_MENU_ITEM: u16 = 1;
 const SET_DEFAULT_MENU_ITEM: u16 = 2;
 
@@ -103,6 +103,7 @@ pub fn run() -> Result<()> {
     let window = create_window().context("creating the tray window")?;
     let icon = tray_icon(window)?;
     Shell_NotifyIcon(co::NIM::ADD, &icon).context("adding the tray icon")?;
+    // SAFETY: The static callback has the required ABI; OUTOFCONTEXT requires a null module.
     let hook = unsafe {
         SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
@@ -121,37 +122,27 @@ pub fn run() -> Result<()> {
 
     let mut message = MSG::default();
     while GetMessage(&mut message, None, 0, 0)? {
+        // SAFETY: GetMessage initialized this message for dispatch.
         unsafe { DispatchMessage(&message) };
     }
     Shell_NotifyIcon(co::NIM::DELETE, &icon)?;
     Ok(())
 }
 
-struct SingletonAppInstanceHandle(HANDLE);
-
-impl Drop for SingletonAppInstanceHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
-fn ensure_only_one_app_instance() -> Result<Option<SingletonAppInstanceHandle>> {
-    let handle = unsafe { CreateMutexW(ptr::null(), 0, w!("Local\\Overbrowsered.Tray")) };
-    let last_error = unsafe { GetLastError() };
-    if handle.is_null() {
-        return Err(io::Error::from_raw_os_error(last_error as i32))
-            .context("creating tray instance mutex");
-    }
-    let mutex = SingletonAppInstanceHandle(handle);
-    if last_error == ERROR_ALREADY_EXISTS {
-        return Ok(None);
-    }
-    Ok(Some(mutex))
+fn ensure_only_one_app_instance() -> Result<Option<OwnedHandle>> {
+    // SAFETY: CreateMutexW returns null or an owned, CloseHandle-compatible handle.
+    let mutex = unsafe {
+        HandleOrNull::from_raw_handle(CreateMutexW(ptr::null(), 0, w!("Local\\Overbrowsered.Tray")))
+    };
+    let last_error = GetLastError();
+    let mutex = OwnedHandle::try_from(mutex)
+        .map_err(|_| last_error)
+        .context("creating tray instance mutex")?;
+    Ok((last_error != co::ERROR::ALREADY_EXISTS).then_some(mutex))
 }
 
 fn register_for_autorestart() -> Result<()> {
+    // SAFETY: A null command line and these documented flags are valid.
     let result =
         unsafe { RegisterApplicationRestart(ptr::null(), RESTART_NO_CRASH | RESTART_NO_HANG) };
     if result < 0 {
@@ -208,6 +199,7 @@ unsafe extern "system" fn foreground_window_changed(
     _thread: u32,
     _time: u32,
 ) {
+    // SAFETY: EVENT_SYSTEM_FOREGROUND supplies the borrowed foreground HWND.
     let window = unsafe { HWND::from_ptr(window) };
     OVERBROWSERED.with(|overbrowsered| overbrowsered.foreground_changed(&window));
 }
@@ -218,9 +210,11 @@ fn create_window() -> Result<HWND> {
     class.lpfnWndProc = Some(window_proc);
     class.hInstance = HINSTANCE::GetModuleHandle(None)?;
     class.set_lpszClassName(Some(&mut class_name));
-    let atom = unsafe { RegisterClassEx(&class)? };
+    SetLastError(co::ERROR::SUCCESS);
 
-    Ok(unsafe {
+    // SAFETY: The class name outlives registration, the procedure is static, and atom/instance match.
+    let window = unsafe {
+        let atom = RegisterClassEx(&class)?;
         HWND::CreateWindowEx(
             co::WS_EX::NoValue,
             AtomStr::Atom(atom),
@@ -233,7 +227,8 @@ fn create_window() -> Result<HWND> {
             &class.hInstance,
             None,
         )?
-    })
+    };
+    Ok(window)
 }
 
 extern "system" fn window_proc(
@@ -243,8 +238,8 @@ extern "system" fn window_proc(
     lparam: isize,
 ) -> isize {
     if message == WM_TRAY_ICON {
-        let click = unsafe { co::WM::from_raw(lparam as u32) };
-        if (click == co::WM::LBUTTONUP || click == co::WM::RBUTTONUP)
+        let click = lparam as u32;
+        if (click == co::WM::LBUTTONUP.raw() || click == co::WM::RBUTTONUP.raw())
             && let Err(error) = show_menu(&window)
         {
             report(&error);
@@ -261,6 +256,7 @@ extern "system" fn window_proc(
         }
         return 0;
     }
+    // SAFETY: Windows supplied these parameters unchanged to this window procedure.
     unsafe { window.DefWindowProc(msg::Wm { msg_id: message, wparam, lparam }) }
 }
 
@@ -331,6 +327,7 @@ fn show_menu(window: &HWND) -> Result<()> {
 }
 
 fn open_default_apps_settings() -> Result<()> {
+    // SAFETY: ASSOCCHANGED requires IDLIST and two unused null item pointers.
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED as i32, SHCNF_IDLIST, ptr::null(), ptr::null()) };
     ShellExecuteEx(&SHELLEXECUTEINFO {
         file: "ms-settings:defaultapps?registeredAppUser=Overbrowsered",

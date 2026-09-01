@@ -26,6 +26,7 @@ winresource = "0.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winsafe = { version = "0.0.28", features = ["user", "advapi", "shell"] }
+windows-registry = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies.windows-sys]
 version = "0.61"

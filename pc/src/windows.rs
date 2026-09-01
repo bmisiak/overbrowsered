@@ -3,30 +3,31 @@ use crate::{
     most_recent_browser_line,
 };
 use anyhow::{Context, Result, anyhow, bail};
-use std::{cell::RefCell, env, ffi::c_void, io, ptr};
-use windows_sys::{
-    Win32::{
-        Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
-        System::{
-            Recovery::{RESTART_NO_CRASH, RESTART_NO_HANG, RegisterApplicationRestart},
-            Threading::CreateMutexW,
-        },
-        UI::{
-            Accessibility::{HWINEVENTHOOK, SetWinEventHook},
-            Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify},
-            WindowsAndMessaging::{
-                EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-            },
+use std::ffi::{OsString, c_void};
+use std::{cell::RefCell, env, io, path::Path, ptr};
+use windows_registry::{CLASSES_ROOT, CURRENT_USER, HSTRING, LOCAL_MACHINE};
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
+    System::{
+        Recovery::{RESTART_NO_CRASH, RESTART_NO_HANG, RegisterApplicationRestart},
+        Threading::CreateMutexW,
+    },
+    UI::{
+        Accessibility::{HWINEVENTHOOK, SetWinEventHook},
+        Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify},
+        WindowsAndMessaging::{
+            EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
         },
     },
-    w,
 };
+use windows_sys::w;
 use winsafe::{co, prelude::*, *};
 
 const OUR_PROGRAM_ID: &str = "Overbrowsered.Url";
-const MOST_RECENT_BROWSER_KEY: &str = "Software\\Overbrowsered";
-const BROWSER_CLIENT_KEY: &str = "Software\\Clients\\StartMenuInternet\\Overbrowsered";
-const CAPABILITIES_KEY: &str = "Software\\Clients\\StartMenuInternet\\Overbrowsered\\Capabilities";
+const SETTINGS_KEY: &str = r"Software\Overbrowsered";
+const MOST_RECENT_BROWSER: &str = "MostRecentBrowser";
+const BROWSER_CLIENT_KEY: &str = r"Software\Clients\StartMenuInternet\Overbrowsered";
+const CAPABILITIES_KEY: &str = r"Software\Clients\StartMenuInternet\Overbrowsered\Capabilities";
 const WM_TRAY_ICON: co::WM = unsafe { co::WM::from_raw(0x8000 + 1) };
 const QUIT_MENU_ITEM: u16 = 1;
 const SET_DEFAULT_MENU_ITEM: u16 = 2;
@@ -212,11 +213,10 @@ unsafe extern "system" fn foreground_window_changed(
 }
 
 fn create_window() -> Result<HWND> {
-    let instance = HINSTANCE::GetModuleHandle(None)?;
     let mut class_name = WString::from_str("Overbrowsered");
     let mut class = WNDCLASSEX::default();
     class.lpfnWndProc = Some(window_proc);
-    class.hInstance = unsafe { instance.raw_copy() };
+    class.hInstance = HINSTANCE::GetModuleHandle(None)?;
     class.set_lpszClassName(Some(&mut class_name));
     let atom = unsafe { RegisterClassEx(&class)? };
 
@@ -230,7 +230,7 @@ fn create_window() -> Result<HWND> {
             SIZE::default(),
             None,
             IdMenu::None,
-            &instance,
+            &class.hInstance,
             None,
         )?
     })
@@ -349,42 +349,25 @@ fn executable_path_of_window(window: &HWND) -> Option<String> {
     Some(path.to_lowercase())
 }
 
-fn string_value(key: &HKEY, sub_key: Option<&str>, value: Option<&str>) -> Option<String> {
-    match key.RegGetValue(sub_key, value, co::RRF::RT_REG_SZ).ok()? {
-        RegistryValue::Sz(text) => Some(text),
-        _ => None,
-    }
-}
-
 fn installed_browsers() -> Vec<Browser> {
     let mut browsers = Vec::new();
-    for root in [&HKEY::LOCAL_MACHINE, &HKEY::CURRENT_USER] {
-        let Ok(registered) = root.RegOpenKeyEx(
-            Some("SOFTWARE\\RegisteredApplications"),
-            co::REG_OPTION::default(),
-            co::KEY::READ,
-        ) else {
+    for root in [LOCAL_MACHINE, CURRENT_USER] {
+        let Ok(registered) = root.open(r"SOFTWARE\RegisteredApplications") else {
             continue;
         };
-        let Ok(names) = registered.RegEnumValue() else {
+        let Ok(applications) = registered.values() else {
             continue;
         };
-        browsers.extend(names.flatten().filter_map(|(name, _)| {
-            let browser_capabilities_key = string_value(&registered, None, Some(&name))?;
-            let program_id = string_value(
-                root,
-                Some(&format!("{browser_capabilities_key}\\URLAssociations")),
-                Some("http"),
-            )
-            .filter(|id| *id != OUR_PROGRAM_ID)?;
+        browsers.extend(applications.filter_map(|(name, capabilities)| {
+            let capabilities = root.open(String::try_from(capabilities).ok()?).ok()?;
+            let urls = capabilities.open("URLAssociations").ok()?;
+            let program_id = urls.get_string("http").ok().filter(|id| id != OUR_PROGRAM_ID)?;
             Some(Browser {
-                display_name: string_value(
-                    root,
-                    Some(&browser_capabilities_key),
-                    Some("ApplicationName"),
-                )
-                .filter(|name| !name.starts_with('@'))
-                .unwrap_or(name),
+                display_name: capabilities
+                    .get_string("ApplicationName")
+                    .ok()
+                    .filter(|name| !name.starts_with('@'))
+                    .unwrap_or(name),
                 executable_path: command_executable(&program_id)?.to_lowercase(),
                 program_id,
             })
@@ -394,78 +377,73 @@ fn installed_browsers() -> Vec<Browser> {
 }
 
 fn command_executable(program_id: &str) -> Option<String> {
-    let command = string_value(
-        &HKEY::CLASSES_ROOT,
-        Some(&format!("{program_id}\\shell\\open\\command")),
-        None,
-    )?;
+    let class = CLASSES_ROOT.open(program_id).ok()?;
+    let command = class.open(r"shell\open\command").ok()?.get_string("").ok()?;
     CommandLineToArgv(command.trim()).ok()?.into_iter().next()
 }
 
-fn write_key(sub_key: &str, name: Option<&str>, value: &str) -> SysResult<()> {
-    if string_value(&HKEY::CURRENT_USER, Some(sub_key), name).as_deref() == Some(value) {
-        return Ok(());
-    }
-    let (key, _) = HKEY::CURRENT_USER.RegCreateKeyEx(
-        sub_key,
-        None,
-        co::REG_OPTION::NON_VOLATILE,
-        co::KEY::WRITE,
-        None,
-    )?;
-    key.RegSetValueEx(name, RegistryValue::Sz(value.to_owned()))?;
-    Ok(())
+fn shell_command(executable: &Path) -> HSTRING {
+    let mut command = OsString::from("\"");
+    command.push(executable);
+    command.push("\" \"%1\"");
+    command.into()
+}
+
+fn icon_location(executable: &Path) -> HSTRING {
+    let mut location = OsString::from("\"");
+    location.push(executable);
+    location.push("\",0");
+    location.into()
 }
 
 fn register_as_link_handler() -> Result<()> {
     let executable = env::current_exe()?;
-    let command = format!("\"{}\" \"%1\"", executable.display());
-    let icon = format!("\"{}\",0", executable.display());
-    let class = format!("Software\\Classes\\{OUR_PROGRAM_ID}");
-    let urls = format!("{CAPABILITIES_KEY}\\URLAssociations");
-    let files = format!("{CAPABILITIES_KEY}\\FileAssociations");
-    for (sub_key, name, value) in [
-        (class.clone(), None, "Overbrowsered URL Handler"),
-        (format!("{class}\\shell\\open\\command"), None, command.as_str()),
-        (format!("{class}\\DefaultIcon"), None, icon.as_str()),
-        (BROWSER_CLIENT_KEY.to_owned(), None, "Overbrowsered"),
-        (format!("{BROWSER_CLIENT_KEY}\\shell\\open\\command"), None, command.as_str()),
-        (format!("{BROWSER_CLIENT_KEY}\\DefaultIcon"), None, icon.as_str()),
-        (CAPABILITIES_KEY.to_owned(), Some("ApplicationName"), "Overbrowsered"),
-        (CAPABILITIES_KEY.to_owned(), Some("ApplicationDescription"), APP_DESCRIPTION),
-        (CAPABILITIES_KEY.to_owned(), Some("ApplicationIcon"), icon.as_str()),
-        (format!("{CAPABILITIES_KEY}\\Startmenu"), Some("StartMenuInternet"), "Overbrowsered"),
-        (urls.clone(), Some("http"), OUR_PROGRAM_ID),
-        (urls, Some("https"), OUR_PROGRAM_ID),
-        (files.clone(), Some(".htm"), OUR_PROGRAM_ID),
-        (files, Some(".html"), OUR_PROGRAM_ID),
-        ("Software\\RegisteredApplications".to_owned(), Some("Overbrowsered"), CAPABILITIES_KEY),
-    ] {
-        write_key(&sub_key, name, value)?;
-    }
+    let command = shell_command(&executable);
+    let icon = icon_location(&executable);
+
+    let class = CURRENT_USER.create(r"Software\Classes")?.create(OUR_PROGRAM_ID)?;
+    class.set_string("", "Overbrowsered URL Handler")?;
+    class.create(r"shell\open\command")?.set_hstring("", &command)?;
+    class.create("DefaultIcon")?.set_hstring("", &icon)?;
+
+    let client = CURRENT_USER.create(BROWSER_CLIENT_KEY)?;
+    client.set_string("", "Overbrowsered")?;
+    client.create(r"shell\open\command")?.set_hstring("", &command)?;
+    client.create("DefaultIcon")?.set_hstring("", &icon)?;
+
+    let capabilities = client.create("Capabilities")?;
+    capabilities.set_string("ApplicationName", "Overbrowsered")?;
+    capabilities.set_string("ApplicationDescription", APP_DESCRIPTION)?;
+    capabilities.set_hstring("ApplicationIcon", &icon)?;
+    capabilities.create("Startmenu")?.set_string("StartMenuInternet", "Overbrowsered")?;
+
+    let urls = capabilities.create("URLAssociations")?;
+    urls.set_string("http", OUR_PROGRAM_ID)?;
+    urls.set_string("https", OUR_PROGRAM_ID)?;
+
+    let files = capabilities.create("FileAssociations")?;
+    files.set_string(".htm", OUR_PROGRAM_ID)?;
+    files.set_string(".html", OUR_PROGRAM_ID)?;
+
+    let registered = CURRENT_USER.create(r"Software\RegisteredApplications")?;
+    registered.set_string("Overbrowsered", CAPABILITIES_KEY)?;
     Ok(())
 }
 
 fn default_http_handler() -> Option<String> {
-    let associations = "Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http";
-    string_value(
-        &HKEY::CURRENT_USER,
-        Some(&format!("{associations}\\UserChoiceLatest\\ProgId")),
-        Some("ProgId"),
-    )
-    .or_else(|| {
-        string_value(
-            &HKEY::CURRENT_USER,
-            Some(&format!("{associations}\\UserChoice")),
-            Some("ProgId"),
-        )
-    })
+    let associations = CURRENT_USER
+        .open(r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http")
+        .ok()?;
+    [r"UserChoiceLatest\ProgId", "UserChoice"]
+        .into_iter()
+        .find_map(|choice| associations.open(choice).ok()?.get_string("ProgId").ok())
 }
 
 fn load_most_recent_browser_id() -> Option<String> {
-    string_value(&HKEY::CURRENT_USER, Some(MOST_RECENT_BROWSER_KEY), None)
+    let settings = CURRENT_USER.open(SETTINGS_KEY).ok()?;
+    settings.get_string(MOST_RECENT_BROWSER).or_else(|_| settings.get_string("")).ok()
 }
 
-fn save_most_recent_browser_id(program_id: &str) -> SysResult<()> {
-    write_key(MOST_RECENT_BROWSER_KEY, None, program_id)
+fn save_most_recent_browser_id(program_id: &str) -> windows_registry::Result<()> {
+    CURRENT_USER.create(SETTINGS_KEY)?.set_string(MOST_RECENT_BROWSER, program_id)
 }

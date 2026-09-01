@@ -15,8 +15,9 @@ git push origin v1.5.0
 ```
 
 The tag must have exactly three numeric components. The release workflow overrides
-`MARKETING_VERSION` from the tag and assigns a unique App Store build number from the GitHub workflow
-run and attempt numbers.
+`MARKETING_VERSION` from the tag. Its archive starts with a GitHub workflow run/attempt build
+identifier, and Xcode's App Store export then manages the uploaded build number against App Store
+Connect so that it remains strictly increasing across macOS app versions and reruns.
 
 After the protected environment is approved, the workflow:
 

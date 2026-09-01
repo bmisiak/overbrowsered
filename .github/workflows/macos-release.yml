@@ -289,7 +289,7 @@ jobs:
           <dict>
             <key>destination</key><string>upload</string>
             <key>installerSigningCertificate</key><string>Mac Installer Distribution</string>
-            <key>manageAppVersionAndBuildNumber</key><false/>
+            <key>manageAppVersionAndBuildNumber</key><true/>
             <key>method</key><string>app-store-connect</string>
             <key>provisioningProfiles</key>
             <dict>

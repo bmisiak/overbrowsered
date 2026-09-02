@@ -54,20 +54,16 @@ pub fn open(links: &[String]) -> Result<()> {
 pub fn run() -> Result<()> {
     futures_lite::future::block_on(async {
         register_as_link_handler().context("registering as a browser")?;
-        let tray = Overbrowsered {
-            most_recent: load_most_recent_browser_id()
-                .and_then(|appid| browsers().find(|browser| browser.appid == appid)),
-            default_handler: default_browser_desktop_file(),
-        }
-        .assume_sni_available(true)
-        .spawn()
-        .await
-        .context("connecting to the session bus")?;
-        watch_focused_windows_for_browsers(tray).await
+        Overbrowsered
+            .assume_sni_available(true)
+            .spawn()
+            .await
+            .context("connecting to the session bus")?;
+        watch_focused_windows_for_browsers().await
     })
 }
 
-async fn watch_focused_windows_for_browsers(tray: ksni::Handle<Overbrowsered>) -> Result<()> {
+async fn watch_focused_windows_for_browsers() -> Result<()> {
     let mut most_recent = load_most_recent_browser_id();
     let mut programs: HashMap<String, Option<Browser>> = HashMap::new();
     if let Err(error) = enable_accessibility().await {
@@ -114,8 +110,6 @@ async fn watch_focused_windows_for_browsers(tray: ksni::Handle<Overbrowsered>) -
             eprintln!("cannot save most recent browser {}: {error:#}", browser.appid);
         }
         most_recent = Some(browser.appid.clone());
-        let browser = browser.clone();
-        tray.update(|tray| tray.most_recent = Some(browser)).await;
     }
     eprintln!("the accessibility event stream ended; exiting");
     Ok(())
@@ -132,17 +126,13 @@ async fn enable_accessibility() -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone)]
 struct Browser {
     appid: String,
     display_name: String,
     program: String,
 }
 
-struct Overbrowsered {
-    most_recent: Option<Browser>,
-    default_handler: Option<String>,
-}
+struct Overbrowsered;
 
 impl Tray for Overbrowsered {
     const MENU_ON_ACTIVATE: bool = true;
@@ -151,9 +141,7 @@ impl Tray for Overbrowsered {
         "overbrowsered".into()
     }
 
-    fn menu_about_to_show(&mut self) {
-        self.default_handler = default_browser_desktop_file();
-    }
+    fn menu_about_to_show(&mut self) {}
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         vec![ksni::Icon { width: 22, height: 22, data: TRAY_ICON_ARGB.to_vec() }]
@@ -162,8 +150,12 @@ impl Tray for Overbrowsered {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let unclickable =
             |label: String| StandardItem { label, enabled: false, ..Default::default() }.into();
-        let most_recent = self.most_recent.as_ref().map(|browser| browser.display_name.clone());
-        let default_handler = &self.default_handler;
+        let most_recent = load_most_recent_browser_id().map(|appid| {
+            browsers()
+                .find(|browser| browser.appid == appid)
+                .map_or(appid, |browser| browser.display_name)
+        });
+        let default_handler = default_browser_desktop_file();
         let we_are_default = default_handler.as_deref() == Some(DESKTOP_FILE);
         let mut items = vec![
             unclickable(AUTHOR_LINE.into()),
@@ -178,14 +170,13 @@ impl Tray for Overbrowsered {
             items.push(
                 StandardItem {
                     label: SET_DEFAULT_PROMPT.into(),
-                    activate: Box::new(|tray: &mut Self| {
+                    activate: Box::new(|_| {
                         if let Err(error) = Command::new("xdg-settings")
                             .args(["set", "default-web-browser", DESKTOP_FILE])
                             .status()
                         {
                             eprintln!("cannot run xdg-settings: {error}");
                         }
-                        tray.default_handler = default_browser_desktop_file();
                     }),
                     ..Default::default()
                 }

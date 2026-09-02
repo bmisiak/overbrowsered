@@ -2,9 +2,10 @@ use crate::{
     APP_DESCRIPTION, AUTHOR_LINE, NO_BROWSER_ADVICE, SET_DEFAULT_PROMPT, default_handler_line,
     most_recent_browser_line,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use atspi::events::object::StateChangedEvent;
 use atspi::events::window::ActivateEvent;
-use atspi::{AccessibilityConnection, Event, WindowEvents};
+use atspi::{AccessibilityConnection, Event, ObjectEvents, State, WindowEvents};
 use freedesktop_desktop_entry::{desktop_entries, get_languages_from_env};
 use futures_lite::StreamExt;
 use ksni::menu::{MenuItem, StandardItem};
@@ -66,15 +67,24 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
     let mut most_recent_browser_id = load_most_recent_browser_id();
     let accessibility =
         AccessibilityConnection::new().await.context("connecting to the accessibility bus")?;
+    // Firefox and Chromium announce a focused window with window:activate;
     accessibility.register_event::<ActivateEvent>().await?;
+    // GTK4 apps like Epiphany only flip the toplevel's `active` state
+    accessibility.register_event::<StateChangedEvent>().await?;
     let bus = DBusProxy::new(accessibility.connection()).await?;
 
     let mut activations = std::pin::pin!(accessibility.event_stream());
     while let Some(event) = activations.next().await {
-        let Ok(Event::Window(WindowEvents::Activate(activation))) = event else {
-            continue;
+        let activated = match event {
+            Ok(Event::Window(WindowEvents::Activate(activation))) => activation.item,
+            Ok(Event::Object(ObjectEvents::StateChanged(change)))
+                if change.state == State::Active && change.enabled =>
+            {
+                change.item
+            }
+            _ => continue,
         };
-        let Some(bus_name) = activation.item.name() else {
+        let Some(bus_name) = activated.name() else {
             continue;
         };
         let Ok(pid) =
@@ -96,7 +106,8 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
         }
         most_recent_browser_id = Some(browser.appid.clone());
     }
-    bail!("the accessibility event stream ended")
+    eprintln!("the accessibility event stream ended; exiting");
+    Ok(())
 }
 
 #[derive(PartialEq)]
@@ -117,6 +128,10 @@ impl Tray for Overbrowsered {
     fn id(&self) -> String {
         "overbrowsered".into()
     }
+
+    // Overriding this makes ksni rebuild the menu right before the host shows it, so the
+    // most-recent-browser and default-handler lines are current at the moment of opening.
+    fn menu_about_to_show(&mut self) {}
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         vec![ksni::Icon { width: 22, height: 22, data: TRAY_ICON_ARGB.to_vec() }]

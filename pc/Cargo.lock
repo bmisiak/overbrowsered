@@ -457,8 +457,7 @@ dependencies = [
 [[package]]
 name = "ksni"
 version = "0.3.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "814b44c24cd2cb236c3b8a41c7f08237b452a8e76ecaa81f1cec40b5b678215b"
+source = "git+https://github.com/bmisiak/ksni?branch=menu-only-introspection#212027dd0f5a9cabb9bcbf7be99d63b8f06cc8b7"
 dependencies = [
  "async-executor",
  "async-io",

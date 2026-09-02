@@ -17,7 +17,7 @@ anyhow = "1"
 atspi = { version = "0.30", default-features = false, features = ["connection", "wrappers"] }
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 futures-lite = { version = "2", default-features = false, features = ["std"] }
-ksni = { version = "0.3", default-features = false, features = ["async-io"] }
+ksni = { git = "https://github.com/bmisiak/ksni", branch = "menu-only-introspection", default-features = false, features = ["async-io"] }
 xdg = "3"
 zbus = { version = "5", default-features = false, features = ["async-io"] }
 

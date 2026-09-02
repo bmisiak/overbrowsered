@@ -53,18 +53,25 @@ pub fn open(links: &[String]) -> Result<()> {
 pub fn run() -> Result<()> {
     futures_lite::future::block_on(async {
         register_as_link_handler().context("registering as a browser")?;
-        Overbrowsered
-            .assume_sni_available(true)
-            .spawn()
-            .await
-            .context("connecting to the session bus")?;
-        watch_focused_windows_for_browsers().await
+        let browsers = installed_browsers();
+        let tray = Overbrowsered {
+            browsers: browsers.clone(),
+            most_recent: load_most_recent_browser_id(),
+            default_handler: default_browser_desktop_file(),
+        }
+        .assume_sni_available(true)
+        .spawn()
+        .await
+        .context("connecting to the session bus")?;
+        watch_focused_windows_for_browsers(browsers, tray).await
     })
 }
 
-async fn watch_focused_windows_for_browsers() -> Result<()> {
-    let installed = installed_browsers();
-    let mut most_recent_browser_id = load_most_recent_browser_id();
+async fn watch_focused_windows_for_browsers(
+    installed: Vec<Browser>,
+    tray: ksni::Handle<Overbrowsered>,
+) -> Result<()> {
+    let mut most_recent = load_most_recent_browser_id();
     if let Err(error) = enable_accessibility().await {
         eprintln!("cannot enable accessibility: {error:#}");
     }
@@ -101,13 +108,16 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
         else {
             continue;
         };
-        if most_recent_browser_id.as_deref() == Some(browser.appid.as_str()) {
+        if most_recent.as_deref() == Some(browser.appid.as_str()) {
             continue;
         }
         if let Err(error) = save_most_recent_browser_id(&browser.appid) {
             eprintln!("cannot save most recent browser {}: {error:#}", browser.appid);
         }
-        most_recent_browser_id = Some(browser.appid.clone());
+        most_recent = Some(browser.appid.clone());
+        // this is a code smell gotta get rid of this one off update
+        let appid = browser.appid.clone();
+        tray.update(|tray| tray.most_recent = Some(appid)).await;
     }
     eprintln!("the accessibility event stream ended; exiting");
     Ok(())
@@ -126,28 +136,36 @@ async fn enable_accessibility() -> Result<()> {
     Ok(())
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 enum RecognizedBy {
     Executable(String),
     FlatpakApp(String),
 }
 
+#[derive(Clone)]
 struct Browser {
     appid: String,
     display_name: String,
     recognized_by: RecognizedBy,
 }
 
-struct Overbrowsered;
+struct Overbrowsered {
+    browsers: Vec<Browser>,
+    most_recent: Option<String>,
+    default_handler: Option<String>,
+}
 
 impl Tray for Overbrowsered {
+    const MENU_ON_ACTIVATE: bool = true; // Without it, GNOME AppIndicator waits for a double-click
+
     fn id(&self) -> String {
         "overbrowsered".into()
     }
 
-    // Overriding this makes ksni rebuild the menu right before the host shows it, so the
-    // most-recent-browser and default-handler lines are current at the moment of opening.
-    fn menu_about_to_show(&mut self) {}
+    // Other apps can take the default at any time, so re-read it when the menu opens.
+    fn menu_about_to_show(&mut self) {
+        self.default_handler = default_browser_desktop_file();
+    }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         vec![ksni::Icon { width: 22, height: 22, data: TRAY_ICON_ARGB.to_vec() }]
@@ -156,13 +174,13 @@ impl Tray for Overbrowsered {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let unclickable =
             |label: String| StandardItem { label, enabled: false, ..Default::default() }.into();
-        let most_recent = load_most_recent_browser_id().map(|appid| {
-            installed_browsers()
-                .into_iter()
+        let most_recent = self.most_recent.clone().map(|appid| {
+            self.browsers
+                .iter()
                 .find(|browser| browser.appid == appid)
-                .map_or(appid, |browser| browser.display_name)
+                .map_or(appid, |browser| browser.display_name.clone())
         });
-        let default_handler = default_browser_desktop_file();
+        let default_handler = &self.default_handler;
         let we_are_default = default_handler.as_deref() == Some(DESKTOP_FILE);
         let mut items = vec![
             unclickable(AUTHOR_LINE.into()),
@@ -177,13 +195,14 @@ impl Tray for Overbrowsered {
             items.push(
                 StandardItem {
                     label: SET_DEFAULT_PROMPT.into(),
-                    activate: Box::new(|_| {
+                    activate: Box::new(|tray: &mut Self| {
                         if let Err(error) = Command::new("xdg-settings")
                             .args(["set", "default-web-browser", DESKTOP_FILE])
-                            .spawn()
+                            .status()
                         {
                             eprintln!("cannot run xdg-settings: {error}");
                         }
+                        tray.default_handler = default_browser_desktop_file();
                     }),
                     ..Default::default()
                 }
@@ -249,8 +268,10 @@ fn register_as_link_handler() -> Result<()> {
     let executable = std::env::current_exe()?;
     let directory =
         BaseDirectories::new().get_data_home().context("HOME is unset")?.join("applications");
+    // Declare every type `xdg-settings set default-web-browser` registers, in the order it
+    // produces. If any is missing, the command patches this file and sleeps 4 seconds per type. Crazy shit.
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Overbrowsered\nComment={APP_DESCRIPTION}\nExec={} %u\nIcon=overbrowsered\nTerminal=false\nStartupNotify=false\nCategories=Network;WebBrowser;\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n",
+        "[Desktop Entry]\nType=Application\nName=Overbrowsered\nComment={APP_DESCRIPTION}\nExec={} %u\nIcon=overbrowsered\nTerminal=false\nStartupNotify=false\nCategories=Network;WebBrowser;\nMimeType=x-scheme-handler/unknown;x-scheme-handler/about;text/html;x-scheme-handler/http;x-scheme-handler/https;\n",
         executable.display()
     );
     let path = directory.join(DESKTOP_FILE);

@@ -2,7 +2,7 @@ use crate::{
     APP_DESCRIPTION, AUTHOR_LINE, NO_BROWSER_ADVICE, SET_DEFAULT_PROMPT, default_handler_line,
     most_recent_browser_line,
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use std::ffi::{OsString, c_void};
 use std::os::windows::io::{HandleOrNull, OwnedHandle};
 use std::{cell::RefCell, env, path::Path, ptr};
@@ -43,25 +43,19 @@ pub fn report(error: &anyhow::Error) {
 }
 
 pub fn open(links: &[String]) -> Result<()> {
-    let _com_alive_while_launching =
-        CoInitializeEx(COINIT::APARTMENTTHREADED | COINIT::DISABLE_OLE1DDE)?;
-    let most_recent_failure = match load_most_recent_browser_id() {
-        Some(program_id) => match launch(links, &program_id) {
-            Ok(()) => return Ok(()),
-            Err(error) => Some(error),
-        },
-        None => None,
-    };
+    let _com_guard = CoInitializeEx(COINIT::APARTMENTTHREADED | COINIT::DISABLE_OLE1DDE)?;
     let installed = installed_browsers();
-    let Some(browser) = topmost_browser(&installed)? else {
-        return Err(match most_recent_failure {
-            Some(cause) => cause.context(NO_BROWSER_ADVICE),
-            None => anyhow!(NO_BROWSER_ADVICE),
-        });
-    };
-    launch(links, &browser.program_id)?;
-    save_most_recent_browser_id(&browser.program_id)?;
-    Ok(())
+    let topmost = topmost_browser(&installed).map(|browser| browser.program_id.clone());
+    let saved = load_most_recent_browser_id().context(NO_BROWSER_ADVICE);
+    let mut failures = Vec::new();
+    for candidate in [topmost, saved] {
+        match candidate.and_then(|id| launch(links, &id).map(|()| id)) {
+            Ok(id) => return save_most_recent_browser_id(&id).context("remembering the browser"),
+            Err(failure) => failures.push(format!("{failure:#}")),
+        }
+    }
+    failures.dedup();
+    bail!("Overbrowsered could not open the link.\n\n{}", failures.join("\n\n"))
 }
 
 fn launch(links: &[String], program_id: &str) -> Result<()> {
@@ -77,7 +71,7 @@ fn launch(links: &[String], program_id: &str) -> Result<()> {
     Ok(())
 }
 
-fn topmost_browser(installed: &[Browser]) -> Result<Option<&Browser>> {
+fn topmost_browser(installed: &[Browser]) -> Result<&Browser> {
     let mut topmost = None;
     EnumWindows(|window: HWND| {
         if topmost.is_none() && window.IsWindowVisible() {
@@ -85,7 +79,7 @@ fn topmost_browser(installed: &[Browser]) -> Result<Option<&Browser>> {
         }
         true
     })?;
-    Ok(topmost)
+    topmost.context("no browser window is open")
 }
 
 fn browser_of_window<'a>(installed: &'a [Browser], window: &HWND) -> Option<&'a Browser> {
@@ -181,7 +175,7 @@ impl State {
     }
 
     fn remember_topmost_browser(&self) -> Result<()> {
-        if let Some(browser) = topmost_browser(&self.installed_browsers)? {
+        if let Ok(browser) = topmost_browser(&self.installed_browsers) {
             save_most_recent_browser_id(&browser.program_id)?;
             *self.most_recent_browser_id.borrow_mut() = Some(browser.program_id.clone());
         }

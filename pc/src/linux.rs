@@ -65,6 +65,9 @@ pub fn run() -> Result<()> {
 async fn watch_focused_windows_for_browsers() -> Result<()> {
     let installed = installed_browsers();
     let mut most_recent_browser_id = load_most_recent_browser_id();
+    if let Err(error) = enable_accessibility().await {
+        eprintln!("cannot enable accessibility: {error:#}");
+    }
     let accessibility =
         AccessibilityConnection::new().await.context("connecting to the accessibility bus")?;
     // Firefox and Chromium announce a focused window with window:activate;
@@ -107,6 +110,19 @@ async fn watch_focused_windows_for_browsers() -> Result<()> {
         most_recent_browser_id = Some(browser.appid.clone());
     }
     eprintln!("the accessibility event stream ended; exiting");
+    Ok(())
+}
+
+/// Firefox and Chromium only join the accessibility bus when the desktop's `IsEnabled` flag
+/// is on, and GNOME ships it off. Turning it on is what screen readers do at startup too.
+async fn enable_accessibility() -> Result<()> {
+    let session = zbus::Connection::session().await?;
+    let status = zbus::Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status")
+        .await?;
+    if status.get_property::<bool>("IsEnabled").await? {
+        return Ok(());
+    }
+    status.set_property("IsEnabled", true).await?;
     Ok(())
 }
 

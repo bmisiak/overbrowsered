@@ -10,6 +10,7 @@ use freedesktop_desktop_entry::{desktop_entries, get_languages_from_env};
 use futures_lite::StreamExt;
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::{Tray, TrayMethods};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use xdg::BaseDirectories;
@@ -53,33 +54,28 @@ pub fn open(links: &[String]) -> Result<()> {
 pub fn run() -> Result<()> {
     futures_lite::future::block_on(async {
         register_as_link_handler().context("registering as a browser")?;
-        let browsers = installed_browsers();
         let tray = Overbrowsered {
-            browsers: browsers.clone(),
-            most_recent: load_most_recent_browser_id(),
+            most_recent: load_most_recent_browser_id()
+                .and_then(|appid| browsers().find(|browser| browser.appid == appid)),
             default_handler: default_browser_desktop_file(),
         }
         .assume_sni_available(true)
         .spawn()
         .await
         .context("connecting to the session bus")?;
-        watch_focused_windows_for_browsers(browsers, tray).await
+        watch_focused_windows_for_browsers(tray).await
     })
 }
 
-async fn watch_focused_windows_for_browsers(
-    installed: Vec<Browser>,
-    tray: ksni::Handle<Overbrowsered>,
-) -> Result<()> {
+async fn watch_focused_windows_for_browsers(tray: ksni::Handle<Overbrowsered>) -> Result<()> {
     let mut most_recent = load_most_recent_browser_id();
+    let mut programs: HashMap<String, Option<Browser>> = HashMap::new();
     if let Err(error) = enable_accessibility().await {
         eprintln!("cannot enable accessibility: {error:#}");
     }
     let accessibility =
         AccessibilityConnection::new().await.context("connecting to the accessibility bus")?;
-    // Firefox and Chromium announce a focused window with window:activate;
     accessibility.register_event::<ActivateEvent>().await?;
-    // GTK4 apps like Epiphany only flip the toplevel's `active` state
     accessibility.register_event::<StateChangedEvent>().await?;
     let bus = DBusProxy::new(accessibility.connection()).await?;
 
@@ -102,9 +98,12 @@ async fn watch_focused_windows_for_browsers(
         else {
             continue;
         };
-        let running_as = recognize_process(pid);
-        let Some(browser) =
-            installed.iter().find(|b| Some(&b.recognized_by) == running_as.as_ref())
+        let Some(program) = program_of(pid) else {
+            continue;
+        };
+        let Some(browser) = programs
+            .entry(program)
+            .or_insert_with_key(|program| browsers().find(|browser| &browser.program == program))
         else {
             continue;
         };
@@ -115,20 +114,17 @@ async fn watch_focused_windows_for_browsers(
             eprintln!("cannot save most recent browser {}: {error:#}", browser.appid);
         }
         most_recent = Some(browser.appid.clone());
-        // this is a code smell gotta get rid of this one off update
-        let appid = browser.appid.clone();
-        tray.update(|tray| tray.most_recent = Some(appid)).await;
+        let browser = browser.clone();
+        tray.update(|tray| tray.most_recent = Some(browser)).await;
     }
     eprintln!("the accessibility event stream ended; exiting");
     Ok(())
 }
 
-/// Firefox and Chromium only join the accessibility bus when the desktop's `IsEnabled` flag
-/// is on, and GNOME ships it off. Turning it on is what screen readers do at startup too.
 async fn enable_accessibility() -> Result<()> {
     let session = zbus::Connection::session().await?;
-    let status = zbus::Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status")
-        .await?;
+    let status =
+        zbus::Proxy::new(&session, "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status").await?;
     if status.get_property::<bool>("IsEnabled").await? {
         return Ok(());
     }
@@ -136,33 +132,25 @@ async fn enable_accessibility() -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, PartialEq)]
-enum RecognizedBy {
-    Executable(String),
-    FlatpakApp(String),
-}
-
 #[derive(Clone)]
 struct Browser {
     appid: String,
     display_name: String,
-    recognized_by: RecognizedBy,
+    program: String,
 }
 
 struct Overbrowsered {
-    browsers: Vec<Browser>,
-    most_recent: Option<String>,
+    most_recent: Option<Browser>,
     default_handler: Option<String>,
 }
 
 impl Tray for Overbrowsered {
-    const MENU_ON_ACTIVATE: bool = true; // Without it, GNOME AppIndicator waits for a double-click
+    const MENU_ON_ACTIVATE: bool = true;
 
     fn id(&self) -> String {
         "overbrowsered".into()
     }
 
-    // Other apps can take the default at any time, so re-read it when the menu opens.
     fn menu_about_to_show(&mut self) {
         self.default_handler = default_browser_desktop_file();
     }
@@ -174,12 +162,7 @@ impl Tray for Overbrowsered {
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let unclickable =
             |label: String| StandardItem { label, enabled: false, ..Default::default() }.into();
-        let most_recent = self.most_recent.clone().map(|appid| {
-            self.browsers
-                .iter()
-                .find(|browser| browser.appid == appid)
-                .map_or(appid, |browser| browser.display_name.clone())
-        });
+        let most_recent = self.most_recent.as_ref().map(|browser| browser.display_name.clone());
         let default_handler = &self.default_handler;
         let we_are_default = default_handler.as_deref() == Some(DESKTOP_FILE);
         let mut items = vec![
@@ -227,41 +210,33 @@ fn default_browser_desktop_file() -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_owned()).filter(|file| !file.is_empty())
 }
 
-fn recognize_process(pid: u32) -> Option<RecognizedBy> {
+fn program_of(pid: u32) -> Option<String> {
     if let Ok(flatpak_info) = std::fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info")) {
-        let app = flatpak_info.lines().find_map(|line| line.strip_prefix("name="))?;
-        return Some(RecognizedBy::FlatpakApp(app.to_owned()));
+        return flatpak_info.lines().find_map(|line| line.strip_prefix("name=")).map(str::to_owned);
     }
-    let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-    Some(RecognizedBy::Executable(path.file_name()?.to_str()?.to_owned()))
+    let executable = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    Some(executable.file_name()?.to_str()?.to_owned())
 }
 
-fn installed_browsers() -> Vec<Browser> {
+fn browsers() -> impl Iterator<Item = Browser> {
     let locales = get_languages_from_env();
-    desktop_entries(&locales)
-        .iter()
-        .filter(|entry| entry.appid != "overbrowsered")
-        .filter_map(|entry| {
-            if !entry.mime_type()?.contains(&"x-scheme-handler/http") {
-                return None;
-            }
-            Some(Browser {
-                appid: entry.appid.clone(),
-                display_name: entry
-                    .name(&locales)
-                    .map_or_else(|| entry.appid.clone(), |name| name.into_owned()),
-                recognized_by: match entry.flatpak() {
-                    Some(app) => RecognizedBy::FlatpakApp(app.to_owned()),
-                    None => RecognizedBy::Executable(
-                        Path::new(entry.parse_exec().ok()?.first()?)
-                            .file_name()?
-                            .to_str()?
-                            .to_owned(),
-                    ),
-                },
-            })
+    desktop_entries(&locales).into_iter().filter_map(move |entry| {
+        if entry.appid == "overbrowsered" || !entry.mime_type()?.contains(&"x-scheme-handler/http")
+        {
+            return None;
+        }
+        let program = match entry.flatpak() {
+            Some(app) => app.to_owned(),
+            None => Path::new(entry.parse_exec().ok()?.first()?).file_name()?.to_str()?.to_owned(),
+        };
+        Some(Browser {
+            appid: entry.appid.clone(),
+            display_name: entry
+                .name(&locales)
+                .map_or_else(|| entry.appid.clone(), |name| name.into_owned()),
+            program,
         })
-        .collect()
+    })
 }
 
 fn register_as_link_handler() -> Result<()> {

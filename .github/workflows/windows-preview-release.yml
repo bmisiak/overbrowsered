@@ -154,13 +154,10 @@ jobs:
           - Choose **ARM64** for Windows on Arm.
           - Move the portable executable to a stable folder before first launch. Overbrowsered registers its current executable path with Windows.
           - The Microsoft Store submission is undergoing certification.
-          - Direct-download signing is pending approval from the SignPath Foundation.
 
           Overbrowsered runs locally, has no accounts or telemetry, and does not silently change the user's default browser. It registers itself as an available link handler, then the user chooses it through Windows Default Apps.
 
-          [Code signing policy](https://github.com/bmisiak/overbrowsered/blob/master/CODE_SIGNING.md)
 
-          Free code signing provided by SignPath.io, certificate by SignPath Foundation.
 
           Built from commit ${{ github.sha }} by GitHub Actions on GitHub-hosted Windows runners.
           "@ | Set-Content -Path release-notes.md

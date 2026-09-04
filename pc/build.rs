@@ -12,4 +12,3 @@ fn main() {
             .expect("embedding the icon and manifest resources");
     }
 }
-

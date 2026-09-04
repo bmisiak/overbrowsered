@@ -3,7 +3,7 @@
   <assemblyIdentity
     type="win32"
     name="BrianMisiak.Overbrowsered"
-    version="1.0.0.0" />
+    version="1.5.0.0" />
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <!-- Windows 10 and Windows 11 -->

@@ -31,7 +31,7 @@ SDK installed:
 
 ```powershell
 .\package\windows\build-msix.ps1 `
-  -Version 0.1.0.0 `
+  -Version 1.5.0.0 `
   -IdentityName 'PartnerCenter.Identity.Name' `
   -Publisher 'CN=PARTNER-CENTER-PUBLISHER-ID' `
   -PublisherDisplayName 'Your publisher name'
@@ -63,7 +63,7 @@ certificate; an unsigned package will not install for ordinary users.
 To create the bundle locally after building both architecture packages:
 
 ```powershell
-.\package\windows\build-msixbundle.ps1 -Version 0.1.0.0
+.\package\windows\build-msixbundle.ps1 -Version 1.5.0.0
 ```
 
 An unsigned package is intended for Partner Center, which signs accepted MSIX

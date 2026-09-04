@@ -1,5 +1,13 @@
 # Windows MSIX packaging
 
+The Windows front-window vector is `icons/windows-window-front.svg`. It omits
+the macOS window controls and centers the address bar. Regenerate the embedded
+executable icon and Store assets from the `pc` directory after changing it:
+
+```powershell
+.\icons\generate-windows-icon-assets.ps1
+```
+
 The package is a full-trust, packaged-classic desktop application. It keeps the
 existing Win32 Default Programs registration because Windows reserves the
 `http` and `https` URI schemes: `windows.protocol` declarations for either name
@@ -84,3 +92,4 @@ Unvirtualized registry values persist after package removal. A future release
 should add an explicit package-removal cleanup path if Windows exposes a reliable
 hook suitable for Store applications. Do not add a manifest `windows.protocol`
 fallback for `http` or `https`; Windows silently ignores those reserved schemes.
+

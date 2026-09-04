@@ -41,6 +41,12 @@ jobs:
         shell: pwsh
         run: rustup target add ${{ matrix.rust_target }}
 
+      - name: Restore Rust dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: pc
+          key: ${{ matrix.rust_target }}
+
       - name: Validate version
         shell: pwsh
         run: |

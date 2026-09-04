@@ -1,6 +1,6 @@
 # Overbrowsered
 
-Overbrowsered opens links in the browser you used most recently instead of forcing every link into one fixed default browser. It is useful if you regularly switch between browsers—for example, while developing and testing websites.
+Overbrowsered opens links in the browser you used most recently instead of forcing every link into one fixed default browser.
 
 Overbrowsered is available for Windows, macOS, and Linux.
 
@@ -16,13 +16,9 @@ https://github.com/user-attachments/assets/aabe43eb-f4c9-4311-8da1-1a6f8e7c2ab3
 - [Mac App Store](https://apps.apple.com/app/apple-store/id1557121701?pt=121866206&ct=gh&mt=8)
 - Microsoft Store release pending certification
 
-Direct Windows releases are built from this public repository with GitHub Actions. Free code signing provided by SignPath.io, certificate by SignPath Foundation. See the [code signing policy](CODE_SIGNING.md).
-
 ## Privacy policy
 
 Overbrowsered does not collect or transmit personal information. On Windows, it stores only the ProgID of the most recently used browser locally under the current user's registry.
-
-This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
 
 ## Support
 

@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/aabe43eb-f4c9-4311-8da1-1a6f8e7c2ab3
 
 - [GitHub Releases](https://github.com/bmisiak/overbrowsered/releases)
 - [Mac App Store](https://apps.apple.com/app/apple-store/id1557121701?pt=121866206&ct=gh&mt=8)
-- Microsoft Store release pending certification
+- [Microsoft Store](https://apps.microsoft.com/detail/9nsg34n97rw7?cid=DevShareMCLPCS&hl=en-US&gl=US)
 
 ## Privacy policy
 
